@@ -1,17 +1,32 @@
 #include <QApplication>
+#include <QCoreApplication>
+#include <QFile>
+#include <QFileInfo>
 #include <QImageReader>
 #include <QImageWriter>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <optional>
 
 #include "App/MainWindow.h"
 #include "Core/EditorRenderer.h"
 #include "Core/EditorState.h"
 #include "Core/PrintComposer.h"
 #include "Imaging/BackgroundTools.h"
+#include "Imaging/CmykPipeline.h"
+#include "Pdf/CmykPdfWriter.h"
+#include "Project/HateFile.h"
+#include "Update/UpdateChecker.h"
+#include "Update/UpdateToast.h"
 
 namespace {
+
+QByteArray readFile(const char* path) {
+    QFile f(QString::fromUtf8(path));
+    f.open(QIODevice::ReadOnly);
+    return f.readAll();
+}
 
 // Headless pipeline smoke test: import -> format -> guide-dot solve ->
 // render (Editing + Preview) -> auto-clean -> export photo -> print sheet.
@@ -88,6 +103,51 @@ int runTestExport(const char* imagePath, const char* outDir) {
     std::printf("sheet layout: %dx%d cols/rows, maxFit=%d count=%d\n", layout.cols, layout.rows, layout.maxFit,
                 layout.count);
 
+    // CMYK PDF/X-1a export of the sheet.
+    pdf::CmykPage page;
+    page.cmyk = imaging::CmykPipeline::toCmyk(sheet);
+    page.width = sheet.width();
+    page.height = sheet.height();
+    page.widthMm = core::PrintComposer::SheetWidthMm;
+    page.heightMm = core::PrintComposer::SheetHeightMm;
+    auto pdfBytes = pdf::buildCmykPdf({page}, imaging::CmykPipeline::swopIcc());
+    QString pdfPath = dir + "/sheet.pdf";
+    QFile pdfFile(pdfPath);
+    pdfFile.open(QIODevice::WriteOnly);
+    pdfFile.write(reinterpret_cast<const char*>(pdfBytes.data()), static_cast<qint64>(pdfBytes.size()));
+    pdfFile.close();
+    std::printf("wrote %s (%zu bytes, cmyk %dx%d)\n", pdfPath.toUtf8().constData(), pdfBytes.size(), page.width,
+                page.height);
+
+    // .hate round-trip.
+    doc.originalBytes = readFile(imagePath);
+    doc.extension = "." + QFileInfo(QString::fromUtf8(imagePath)).suffix().toLower();
+    project::HateFile::Project proj;
+    proj.state = s;
+    proj.photos = {std::make_shared<core::PhotoDocument>(doc)};
+    proj.activePhotoId = doc.id;
+    QString hatePath = dir + "/project.hate";
+    QString err;
+    if (!project::HateFile::save(hatePath, proj, &err)) {
+        std::fprintf(stderr, ".hate save failed: %s\n", err.toUtf8().constData());
+        return 1;
+    }
+    std::printf("wrote %s\n", hatePath.toUtf8().constData());
+
+    project::HateFile::Project reopened;
+    if (!project::HateFile::open(hatePath, reopened, &err)) {
+        std::fprintf(stderr, ".hate open failed: %s\n", err.toUtf8().constData());
+        return 1;
+    }
+    bool ok = reopened.photos.size() == 1 && !reopened.photos[0]->original.isNull() &&
+              reopened.photos[0]->processed.has_value() &&
+              std::abs(reopened.state.widthMm - s.widthMm) < 1e-9 &&
+              std::abs(reopened.state.guide.scale - s.guide.scale) < 1e-9 && reopened.activePhotoId == doc.id;
+    std::printf(".hate round-trip: %s (photos=%zu, w=%.1f, guide.scale=%.3f, activeId=%d)\n",
+                ok ? "OK" : "MISMATCH", reopened.photos.size(), reopened.state.widthMm,
+                reopened.state.guide.scale, reopened.activePhotoId);
+    if (!ok) return 1;
+
     return 0;
 }
 
@@ -101,8 +161,25 @@ int main(int argc, char** argv) {
         }
     }
 
+    QCoreApplication::setOrganizationName("iHateVisa");
+    QCoreApplication::setApplicationName("iHateVisa");
     QApplication app(argc, argv);
     ihv::app::MainWindow window;
     window.show();
+
+    // Offline-first: a background check that never blocks/interrupts
+    // startup, and swallows every network/parse failure silently (see
+    // UpdateChecker::checkAsync). Only shown if there's actually something
+    // newer, not already skipped, and not disabled by the user.
+    static ihv::update::UpdateChecker checker;
+    if (ihv::update::UpdateChecker::autoCheckEnabled()) {
+        checker.checkAsync([&window](std::optional<ihv::update::UpdateInfo> info) {
+            if (!info) return;
+            auto* toast = new ihv::update::UpdateToast(*info, nullptr);
+            toast->placeBottomRight();
+            toast->show();
+        });
+    }
+
     return app.exec();
 }

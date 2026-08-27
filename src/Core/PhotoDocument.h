@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QByteArray>
 #include <QImage>
 #include <QString>
 #include <memory>
@@ -13,7 +14,9 @@ namespace ihv::core {
 struct PhotoDocument {
     int id = 0;
     QString name;
-    QImage original;              // as imported, never mutated
+    QString extension;                // e.g. ".heic" — for re-decoding originalBytes
+    QByteArray originalBytes;         // exact source file bytes, for .hate round-trip
+    QImage original;                  // as imported (decoded), never mutated
     std::optional<QImage> processed;  // background-removal result, if any
 
     const QImage& displayImage() const { return processed ? *processed : original; }

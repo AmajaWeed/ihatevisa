@@ -1,7 +1,10 @@
 #include "App/MainWindow.h"
 
+#include <QAction>
+#include <QCloseEvent>
 #include <QDragEnterEvent>
 #include <QDropEvent>
+#include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QGroupBox>
@@ -10,7 +13,9 @@
 #include <QImageReader>
 #include <QImageWriter>
 #include <QKeyEvent>
+#include <QKeySequence>
 #include <QListWidgetItem>
+#include <QMenuBar>
 #include <QMessageBox>
 #include <QMimeData>
 #include <QPainter>
@@ -24,6 +29,11 @@
 #include "Core/EditorRenderer.h"
 #include "Core/PrintComposer.h"
 #include "Imaging/BackgroundTools.h"
+#include "Imaging/CmykPipeline.h"
+#include "Pdf/CmykPdfWriter.h"
+#include "Project/HateFile.h"
+#include "Update/UpdateChecker.h"
+#include "Update/UpdateToast.h"
 
 namespace ihv::app {
 
@@ -47,7 +57,13 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     applyFormat(state_, "passport_rf");
     setAcceptDrops(true);
     buildUi();
+    syncFormatFieldsToUi();
+    QSignalBlocker b1(ovalCheck_), b2(cornerCheck_);
+    ovalCheck_->setChecked(state_.ovalOverlay);
+    cornerCheck_->setChecked(state_.cornerOverlay);
     switchTab(0);
+    dirty_ = false;  // syncFormatFieldsToUi()/switchTab() above must not mark a fresh project dirty
+    updateWindowTitle();
 }
 
 core::PhotoDocumentPtr MainWindow::activePhoto() const {
@@ -61,6 +77,70 @@ core::PhotoDocumentPtr MainWindow::activePhoto() const {
 void MainWindow::buildUi() {
     setWindowTitle("iHateVisa");
     resize(1300, 860);
+    setAcceptDrops(true);
+
+    auto* fileMenu = menuBar()->addMenu("Файл");
+    auto* newAct = fileMenu->addAction("Новый проект");
+    newAct->setShortcut(QKeySequence::New);
+    connect(newAct, &QAction::triggered, this, [this] {
+        if (!confirmDiscardUnsaved()) return;
+        state_ = core::EditorState{};
+        core::EditorEngine::applyFormat(state_, "passport_rf");
+        photos_.clear();
+        activePhotoId_ = -1;
+        undoStack_.clear();
+        projectPath_.clear();
+        editor_->setPhoto(nullptr);
+        syncFormatFieldsToUi();
+        refresh();
+        refreshThumbs();
+        dirty_ = false;
+        updateWindowTitle();
+    });
+    auto* openAct = fileMenu->addAction("Открыть проект...");
+    openAct->setShortcut(QKeySequence::Open);
+    connect(openAct, &QAction::triggered, this, &MainWindow::openProjectDialog);
+    auto* saveAct = fileMenu->addAction("Сохранить проект");
+    saveAct->setShortcut(QKeySequence::Save);
+    connect(saveAct, &QAction::triggered, this, &MainWindow::saveProjectOrPrompt);
+    auto* saveAsAct = fileMenu->addAction("Сохранить проект как...");
+    saveAsAct->setShortcut(QKeySequence::SaveAs);
+    connect(saveAsAct, &QAction::triggered, this, &MainWindow::saveProjectAs);
+    fileMenu->addSeparator();
+    auto* importAct = fileMenu->addAction("Импорт фото...");
+    connect(importAct, &QAction::triggered, this, [this] {
+        QStringList paths = QFileDialog::getOpenFileNames(this, "Импорт фото");
+        if (!paths.isEmpty()) importFiles(paths);
+    });
+    auto* exportPhotoAct = fileMenu->addAction("Сохранить фото...");
+    connect(exportPhotoAct, &QAction::triggered, this, &MainWindow::exportPhoto);
+    auto* exportSheetAct = fileMenu->addAction("Сохранить лист (JPEG)...");
+    connect(exportSheetAct, &QAction::triggered, this, &MainWindow::exportSheet);
+    auto* exportCmykAct = fileMenu->addAction("Экспорт CMYK PDF...");
+    connect(exportCmykAct, &QAction::triggered, this, &MainWindow::exportCmykPdf);
+
+    auto* editMenu = menuBar()->addMenu("Правка");
+    auto* undoAct = editMenu->addAction("Отменить");
+    undoAct->setShortcut(QKeySequence::Undo);
+    connect(undoAct, &QAction::triggered, this, &MainWindow::undo);
+
+    auto* helpMenu = menuBar()->addMenu("Справка");
+    auto* checkUpdateAct = helpMenu->addAction("Проверить обновления...");
+    connect(checkUpdateAct, &QAction::triggered, this, [this] {
+        auto* checker = new update::UpdateChecker(this);
+        checker->checkAsync(
+            [this, checker](std::optional<update::UpdateInfo> info) {
+                checker->deleteLater();
+                if (!info) {
+                    QMessageBox::information(this, "Обновления", "У вас установлена последняя версия.");
+                    return;
+                }
+                auto* toast = new update::UpdateToast(*info, nullptr);
+                toast->placeBottomRight();
+                toast->show();
+            },
+            /*ignoreSkipped=*/true);
+    });
 
     auto* central = new QWidget(this);
     auto* rootLayout = new QVBoxLayout(central);
@@ -601,9 +681,11 @@ void MainWindow::undo() {
 }
 
 void MainWindow::refresh() {
+    dirty_ = true;
     editor_->update();
     refreshInfo();
     if (currentTab_ == 2) updatePrintLayoutInfo();
+    updateWindowTitle();
 }
 
 void MainWindow::refreshThumbs() {
@@ -677,6 +759,34 @@ void MainWindow::exportSheet() {
     topInfo_->setText("Лист сохранён: " + path);
 }
 
+void MainWindow::exportCmykPdf() {
+    auto ph = activePhoto();
+    if (!ph) {
+        QMessageBox::information(this, "Нет фото", "Сначала импортируйте фотографию.");
+        return;
+    }
+    QString path = QFileDialog::getSaveFileName(this, "Экспорт CMYK PDF", "print_10x15.pdf", "PDF (*.pdf)");
+    if (path.isEmpty()) return;
+
+    QImage sheet = core::PrintComposer::buildSheet(state_, *ph);
+    pdf::CmykPage page;
+    page.cmyk = imaging::CmykPipeline::toCmyk(sheet);
+    page.width = sheet.width();
+    page.height = sheet.height();
+    page.widthMm = core::PrintComposer::SheetWidthMm;
+    page.heightMm = core::PrintComposer::SheetHeightMm;
+
+    auto pdfBytes = pdf::buildCmykPdf({page}, imaging::CmykPipeline::swopIcc());
+    QFile out(path);
+    if (!out.open(QIODevice::WriteOnly)) {
+        QMessageBox::warning(this, "Ошибка", "Не удалось сохранить файл.");
+        return;
+    }
+    out.write(reinterpret_cast<const char*>(pdfBytes.data()), static_cast<qint64>(pdfBytes.size()));
+    out.close();
+    topInfo_->setText("CMYK PDF сохранён: " + path);
+}
+
 void MainWindow::printSheet() {
     auto ph = activePhoto();
     if (!ph) return;
@@ -744,19 +854,8 @@ void MainWindow::updatePrintLayoutInfo() {
 // ================= Events =================
 
 void MainWindow::keyPressEvent(QKeyEvent* e) {
-    if ((e->modifiers() & Qt::ControlModifier) && e->key() == Qt::Key_Z) {
-        undo();
-        return;
-    }
-    if ((e->modifiers() & Qt::ControlModifier) && e->key() == Qt::Key_S) {
-        exportPhoto();
-        return;
-    }
-    if ((e->modifiers() & Qt::ControlModifier) && e->key() == Qt::Key_O) {
-        QStringList paths = QFileDialog::getOpenFileNames(this, "Импорт фото");
-        if (!paths.isEmpty()) importFiles(paths);
-        return;
-    }
+    // Ctrl+Z/S/Shift+S/O are wired as QAction shortcuts (menu bar) instead
+    // of handled here, so they work even when a menu/dialog has focus.
     if (!activePhoto()) {
         QMainWindow::keyPressEvent(e);
         return;
@@ -790,7 +889,116 @@ void MainWindow::dragEnterEvent(QDragEnterEvent* e) {
 void MainWindow::dropEvent(QDropEvent* e) {
     QStringList paths;
     for (const QUrl& url : e->mimeData()->urls()) paths << url.toLocalFile();
+    if (paths.size() == 1 && paths.first().endsWith(".hate", Qt::CaseInsensitive)) {
+        if (confirmDiscardUnsaved()) openProject(paths.first());
+        return;
+    }
     if (!paths.isEmpty()) importFiles(paths);
+}
+
+void MainWindow::closeEvent(QCloseEvent* e) {
+    if (!confirmDiscardUnsaved()) {
+        e->ignore();
+        return;
+    }
+    e->accept();
+}
+
+// ================= .hate project =================
+
+bool MainWindow::saveProject(const QString& path) {
+    project::HateFile::Project proj;
+    proj.state = state_;
+    proj.photos = photos_;
+    proj.activePhotoId = activePhotoId_;
+    QString error;
+    if (!project::HateFile::save(path, proj, &error)) {
+        QMessageBox::warning(this, "Ошибка сохранения", error);
+        return false;
+    }
+    projectPath_ = path;
+    dirty_ = false;
+    updateWindowTitle();
+    topInfo_->setText("Проект сохранён: " + path);
+    return true;
+}
+
+void MainWindow::saveProjectOrPrompt() {
+    if (projectPath_.isEmpty()) {
+        saveProjectAs();
+    } else {
+        saveProject(projectPath_);
+    }
+}
+
+void MainWindow::saveProjectAs() {
+    QString path = QFileDialog::getSaveFileName(this, "Сохранить проект", "project.hate", "iHateVisa (*.hate)");
+    if (path.isEmpty()) return;
+    if (!path.endsWith(".hate", Qt::CaseInsensitive)) path += ".hate";
+    saveProject(path);
+}
+
+void MainWindow::openProject(const QString& path) {
+    project::HateFile::Project proj;
+    QString error;
+    if (!project::HateFile::open(path, proj, &error)) {
+        QMessageBox::warning(this, "Ошибка открытия", error);
+        return;
+    }
+    state_ = proj.state;
+    photos_ = proj.photos;
+    activePhotoId_ = proj.activePhotoId;
+    nextPhotoId_ = 1;
+    for (const auto& p : photos_) nextPhotoId_ = std::max(nextPhotoId_, p->id + 1);
+    undoStack_.clear();
+    projectPath_ = path;
+    editor_->setPhoto(activePhoto());
+    syncFormatFieldsToUi();
+    QSignalBlocker b1(ovalCheck_), b2(cornerCheck_), b3(bwCheck_), b4(brightSlider_), b5(contrastSlider_),
+        b6(gammaSlider_), b7(satSlider_), b8(lockVerticalCheck_), b9(rotationSlider_);
+    ovalCheck_->setChecked(state_.ovalOverlay);
+    cornerCheck_->setChecked(state_.cornerOverlay);
+    bwCheck_->setChecked(state_.blackAndWhite);
+    brightSlider_->setValue(state_.brightness);
+    contrastSlider_->setValue(state_.contrast);
+    gammaSlider_->setValue(state_.gammaPercent);
+    satSlider_->setValue(state_.saturationPercent);
+    lockVerticalCheck_->setChecked(state_.lockVertical);
+    rotationSlider_->setEnabled(!state_.lockVertical);
+    rotationSlider_->setValue(static_cast<int>(std::round(state_.guide.rotation * 10)));
+    rotationValueLabel_->setText(QString::number(state_.guide.rotation, 'f', 1) + "°");
+    refresh();
+    refreshThumbs();
+    dirty_ = false;
+    updateWindowTitle();
+    topInfo_->setText("Проект открыт: " + path);
+}
+
+void MainWindow::openProjectDialog() {
+    if (!confirmDiscardUnsaved()) return;
+    QString path = QFileDialog::getOpenFileName(this, "Открыть проект", QString(), "iHateVisa (*.hate)");
+    if (!path.isEmpty()) openProject(path);
+}
+
+bool MainWindow::confirmDiscardUnsaved() {
+    if (!dirty_) return true;
+    auto answer = QMessageBox::question(
+        this, "Несохранённые изменения", "Сохранить изменения в проекте перед продолжением?",
+        QMessageBox::Save | QMessageBox::Discard | QMessageBox::Cancel, QMessageBox::Save);
+    if (answer == QMessageBox::Cancel) return false;
+    if (answer == QMessageBox::Save) {
+        if (projectPath_.isEmpty()) {
+            saveProjectAs();
+            return !dirty_;  // saveProjectAs leaves dirty_ true if the user cancelled the file dialog
+        }
+        return saveProject(projectPath_);
+    }
+    return true;  // Discard
+}
+
+void MainWindow::updateWindowTitle() {
+    QString name = projectPath_.isEmpty() ? "Новый проект" : QFileInfo(projectPath_).fileName();
+    setWindowTitle(QString("%1%2 — iHateVisa").arg(dirty_ ? "*" : "").arg(name));
 }
 
 }  // namespace ihv::app

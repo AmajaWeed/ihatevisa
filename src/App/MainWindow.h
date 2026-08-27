@@ -30,6 +30,7 @@ protected:
     void keyPressEvent(QKeyEvent* e) override;
     void dragEnterEvent(QDragEnterEvent* e) override;
     void dropEvent(QDropEvent* e) override;
+    void closeEvent(QCloseEvent* e) override;
 
 private:
     // UI construction
@@ -53,11 +54,21 @@ private:
     void refreshInfo();
     void exportPhoto();
     void exportSheet();
+    void exportCmykPdf();
     void printSheet();
     void autoCleanBackground();
     void onWandClick(QPoint sourcePx);
     void undoWand();
     void updatePrintLayoutInfo();
+
+    // .hate project
+    bool saveProject(const QString& path);
+    void saveProjectAs();
+    void saveProjectOrPrompt();
+    void openProject(const QString& path);
+    void openProjectDialog();
+    bool confirmDiscardUnsaved();
+    void updateWindowTitle();
 
     core::PhotoDocumentPtr activePhoto() const;
 
@@ -68,6 +79,8 @@ private:
     int nextPhotoId_ = 1;
     std::vector<core::EditorState> undoStack_;  // guide/color/overlay snapshots (not the photo list)
     int currentTab_ = 0;
+    QString projectPath_;  // empty = unsaved new project
+    bool dirty_ = false;
 
     // Widgets
     EditorWidget* editor_ = nullptr;

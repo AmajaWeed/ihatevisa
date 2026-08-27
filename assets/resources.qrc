@@ -1,0 +1,5 @@
+<RCC>
+    <qresource prefix="/">
+        <file alias="USWebCoatedSWOP.icc">USWebCoatedSWOP.icc</file>
+    </qresource>
+</RCC>
