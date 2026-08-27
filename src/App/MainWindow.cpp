@@ -77,8 +77,9 @@ void MainWindow::buildUi() {
     topInfo_->setStyleSheet("color:#888;");
     auto* importBtn = new QPushButton("＋ Добавить фото", topBar);
     connect(importBtn, &QPushButton::clicked, this, [this] {
-        QStringList paths = QFileDialog::getOpenFileNames(this, "Импорт фото", QString(),
-                                                            "Изображения (*.png *.jpg *.jpeg *.webp *.bmp)");
+        QStringList paths = QFileDialog::getOpenFileNames(
+            this, "Импорт фото", QString(),
+            "Изображения (*.png *.jpg *.jpeg *.heic *.heif *.webp *.bmp *.tif *.tiff);;Все файлы (*)");
         if (!paths.isEmpty()) importFiles(paths);
     });
     topLayout->addWidget(logo);
@@ -518,17 +519,24 @@ void MainWindow::switchTab(int index) {
 }
 
 void MainWindow::importFiles(const QStringList& paths) {
+    QStringList failed;
     for (const QString& path : paths) {
         QImageReader reader(path);
         reader.setAutoTransform(true);
         QImage img = reader.read();
-        if (img.isNull()) continue;
+        if (img.isNull()) {
+            failed << QFileInfo(path).fileName() + ": " + reader.errorString();
+            continue;
+        }
         auto doc = std::make_shared<core::PhotoDocument>();
         doc->id = nextPhotoId_++;
         doc->name = QFileInfo(path).fileName();
         doc->original = img.convertToFormat(QImage::Format_ARGB32);
         photos_.push_back(doc);
         selectPhoto(doc->id);
+    }
+    if (!failed.isEmpty()) {
+        QMessageBox::warning(this, "Не удалось открыть", "Не удалось прочитать:\n" + failed.join("\n"));
     }
     refreshThumbs();
 }
