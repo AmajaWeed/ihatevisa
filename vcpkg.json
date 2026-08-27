@@ -1,0 +1,5 @@
+{
+  "name": "ihatevisa",
+  "version": "1.1.0",
+  "dependencies": ["lcms", "libzip"]
+}

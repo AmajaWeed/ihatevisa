@@ -17,10 +17,24 @@ if(APPLE)
 endif()
 
 find_package(Qt6 REQUIRED COMPONENTS Widgets PrintSupport Network)
-find_package(PkgConfig REQUIRED)
 find_package(ZLIB REQUIRED)
-pkg_check_modules(LCMS2 REQUIRED IMPORTED_TARGET lcms2)
-pkg_check_modules(LIBZIP REQUIRED IMPORTED_TARGET libzip)
+
+# macOS/Linux: Homebrew ships lcms2/libzip with pkg-config files, no
+# CMake config. Windows CI has no pkg-config at all (and no lcms2/libzip
+# preinstalled either) — it goes through vcpkg instead (preinstalled on
+# GitHub's windows-latest runners, driven by vcpkg.json in manifest mode).
+if(WIN32)
+    find_package(lcms2 CONFIG REQUIRED)
+    find_package(libzip CONFIG REQUIRED)
+    set(LCMS2_TARGET lcms2::lcms2)
+    set(LIBZIP_TARGET libzip::zip)
+else()
+    find_package(PkgConfig REQUIRED)
+    pkg_check_modules(LCMS2 REQUIRED IMPORTED_TARGET lcms2)
+    pkg_check_modules(LIBZIP REQUIRED IMPORTED_TARGET libzip)
+    set(LCMS2_TARGET PkgConfig::LCMS2)
+    set(LIBZIP_TARGET PkgConfig::LIBZIP)
+endif()
 
 set(SOURCES
     src/App/main.cpp
@@ -49,8 +63,8 @@ target_link_libraries(iHateVisa PRIVATE
     Qt6::Widgets
     Qt6::PrintSupport
     Qt6::Network
-    PkgConfig::LCMS2
-    PkgConfig::LIBZIP
+    ${LCMS2_TARGET}
+    ${LIBZIP_TARGET}
     ZLIB::ZLIB
 )
 
