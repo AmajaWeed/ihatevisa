@@ -9,7 +9,9 @@ if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE Release)
 endif()
 
-list(APPEND CMAKE_PREFIX_PATH "/opt/homebrew/opt/qt")
+if(APPLE)
+    list(APPEND CMAKE_PREFIX_PATH "/opt/homebrew/opt/qt")
+endif()
 
 find_package(Qt6 REQUIRED COMPONENTS Widgets PrintSupport)
 

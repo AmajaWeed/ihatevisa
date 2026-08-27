@@ -1,0 +1,45 @@
+# Windows build: no Windows machine was available in the session that
+# ported this app from the browser prototype, so this runs on a real
+# windows-latest GitHub Actions runner instead. workflow_dispatch (manual
+# trigger) mirrors the pattern already used for iHateCards' installer build.
+name: Windows build
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Версия, например 1.0.0"
+        required: true
+        default: "1.0.0"
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: "6.7.*"
+          arch: win64_msvc2019_64
+          modules: ""
+
+      - name: Configure
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build --config Release -j
+
+      - name: Bundle Qt DLLs
+        run: |
+          windeployqt --release --no-translations build/Release/iHateVisa.exe
+
+      - name: Zip
+        run: |
+          Compress-Archive -Path build/Release/* -DestinationPath iHateVisa-${{ inputs.version }}-windows-x64.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: iHateVisa-${{ inputs.version }}-windows-x64
+          path: iHateVisa-${{ inputs.version }}-windows-x64.zip
