@@ -8,12 +8,11 @@
 
 namespace ihv::update {
 
-// Download -> verify SHA-256 -> extract to staging -> launch a generated
-// external apply script that waits for this process to exit, then
-// atomically swaps staging in for the running install (with rollback and
-// guaranteed relaunch on any failure). Ported 1:1 from iHateCards.NET's
-// UpdateInstaller design (itself carried over from an earlier C# project,
-// per the project's own update-architecture notes).
+// Download -> verify SHA-256 -> extract to a temporary staging folder ->
+// launch a generated external apply script that waits for this process to
+// exit, then copies the staged files over the installed files in place
+// (overwriting changed files, removing ones no longer shipped, leaving the
+// install directory itself untouched) and deletes the staging folder.
 class UpdateInstaller : public QObject {
     Q_OBJECT
 
@@ -41,7 +40,13 @@ public:
 
 private:
     bool extractStaging(const QString& zipPath, const QString& stagingDir, QString* error);
-    bool launchApplier(const QString& stagingRoot, const QString& targetDir, qint64 waitPid, QString* error);
+    // `stagingRoot` is the directory actually synced over `targetDir` (may
+    // be a subdirectory of `stagingParentDir`, e.g. the *.app bundle inside
+    // the raw extraction, which also holds a __MACOSX sidecar on macOS);
+    // `stagingParentDir` is what gets deleted afterwards so no extraction
+    // leftovers survive the update.
+    bool launchApplier(const QString& stagingRoot, const QString& stagingParentDir, const QString& targetDir,
+                        const QString& zipPath, qint64 waitPid, QString* error);
 };
 
 }  // namespace ihv::update

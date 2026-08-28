@@ -136,12 +136,23 @@ bool UpdateInstaller::extractStaging(const QString& zipPath, const QString& stag
     return true;
 }
 
-bool UpdateInstaller::launchApplier(const QString& stagingRoot, const QString& targetDir, qint64 waitPid,
+bool UpdateInstaller::launchApplier(const QString& stagingRoot, const QString& stagingParentDir,
+                                     const QString& targetDir, const QString& zipPath, qint64 waitPid,
                                      QString* error) {
     QString log = updatesDir() + "/apply-update.log";
 #if defined(Q_OS_WIN)
     QString scriptPath = updatesDir() + "/apply-update.ps1";
     QString exePath = targetDir + "/iHateVisa.exe";
+    // In-place file swap: robocopy /MIR mirrors the staged files over the
+    // install directory (overwrite changed, add new, remove files the new
+    // version no longer ships) without ever moving/renaming the install
+    // directory itself. That directory-rename dance was the previous
+    // approach and is exactly what could silently fail (a locked DLL, an
+    // AV scan holding a handle, a stray Explorer window) — when it did,
+    // the whole update was rolled back and the app just relaunched
+    // unchanged, which looks from the outside like "says downloaded but
+    // never actually updates". Copying files individually has no such
+    // all-or-nothing requirement.
     QString script = QString(
                           "$targetPid = %1\n"
                           "Wait-Process -Id $targetPid -Timeout 120 -ErrorAction SilentlyContinue\n"
@@ -149,38 +160,25 @@ bool UpdateInstaller::launchApplier(const QString& stagingRoot, const QString& t
                           "$log = \"%2\"\n"
                           "$target = \"%3\"\n"
                           "$staging = \"%4\"\n"
-                          "$backup = \"$target.old\"\n"
-                          "\"$(Get-Date) starting apply\" | Out-File -Append $log\n"
-                          "if (Test-Path $backup) { Remove-Item -Recurse -Force $backup -ErrorAction "
-                          "SilentlyContinue }\n"
-                          "$ok = $false\n"
-                          "for ($i = 1; $i -le 6; $i++) {\n"
-                          "  try {\n"
-                          "    Move-Item $target $backup -ErrorAction Stop\n"
-                          "    try {\n"
-                          "      Move-Item $staging $target -ErrorAction Stop\n"
-                          "      $ok = $true\n"
-                          "      break\n"
-                          "    } catch {\n"
-                          "      Move-Item $backup $target -ErrorAction SilentlyContinue\n"
-                          "      break\n"
-                          "    }\n"
-                          "  } catch {\n"
-                          "    Start-Sleep -Milliseconds (500 * $i)\n"
-                          "  }\n"
-                          "}\n"
-                          "if ($ok) {\n"
-                          "  if (Test-Path $backup) { Remove-Item -Recurse -Force $backup -ErrorAction "
-                          "SilentlyContinue }\n"
-                          "  \"$(Get-Date) applied ok\" | Out-File -Append $log\n"
+                          "$stagingParent = \"%5\"\n"
+                          "$zip = \"%6\"\n"
+                          "\"$(Get-Date) starting apply (in-place file swap)\" | Out-File -Append $log\n"
+                          "robocopy \"$staging\" \"$target\" /MIR /R:5 /W:1 /NFL /NDL /NP *>> $log\n"
+                          "$rc = $LASTEXITCODE\n"
+                          "if ($rc -lt 8) {\n"
+                          "  \"$(Get-Date) applied ok (robocopy exit $rc)\" | Out-File -Append $log\n"
                           "} else {\n"
-                          "  \"$(Get-Date) apply FAILED, rolled back\" | Out-File -Append $log\n"
+                          "  \"$(Get-Date) apply FAILED (robocopy exit $rc)\" | Out-File -Append $log\n"
                           "}\n"
-                          "Start-Process \"%5\"\n")
+                          "Remove-Item -Recurse -Force $stagingParent -ErrorAction SilentlyContinue\n"
+                          "Remove-Item -Force $zip -ErrorAction SilentlyContinue\n"
+                          "Start-Process \"%7\"\n")
                           .arg(waitPid)
                           .arg(log)
                           .arg(targetDir)
                           .arg(stagingRoot)
+                          .arg(stagingParentDir)
+                          .arg(zipPath)
                           .arg(exePath);
     QFile f(scriptPath);
     if (!f.open(QIODevice::WriteOnly | QIODevice::Text)) {
@@ -199,6 +197,9 @@ bool UpdateInstaller::launchApplier(const QString& stagingRoot, const QString& t
     QString codesignCmd = isAppBundle ? QString("codesign --force --deep --sign - \"%1\" >> \"%2\" 2>&1\n")
                                              .arg(targetDir, log)
                                        : QString();
+    // Same in-place-swap approach as Windows: rsync the staged files over
+    // the install directory (deleting anything the new version no longer
+    // ships) instead of moving the whole bundle out and back in.
     QString script = QString(
                           "#!/bin/sh\n"
                           "PID=%1\n"
@@ -210,36 +211,32 @@ bool UpdateInstaller::launchApplier(const QString& stagingRoot, const QString& t
                           "LOG=\"%2\"\n"
                           "TARGET=\"%3\"\n"
                           "STAGING=\"%4\"\n"
-                          "BACKUP=\"$TARGET.old\"\n"
-                          "echo \"$(date) starting apply\" >> \"$LOG\"\n"
-                          "rm -rf \"$BACKUP\"\n"
-                          "OK=0\n"
-                          "i=1\n"
-                          "while [ $i -le 6 ]; do\n"
-                          "  if mv \"$TARGET\" \"$BACKUP\" 2>>\"$LOG\"; then\n"
-                          "    if mv \"$STAGING\" \"$TARGET\" 2>>\"$LOG\"; then\n"
-                          "      OK=1\n"
-                          "      break\n"
-                          "    else\n"
-                          "      mv \"$BACKUP\" \"$TARGET\" 2>>\"$LOG\" || true\n"
-                          "      break\n"
-                          "    fi\n"
-                          "  fi\n"
-                          "  sleep $i\n"
-                          "  i=$((i+1))\n"
-                          "done\n"
-                          "if [ \"$OK\" = \"1\" ]; then\n"
-                          "  rm -rf \"$BACKUP\"\n"
-                          "%5"
+                          "STAGING_PARENT=\"%5\"\n"
+                          "ZIP=\"%6\"\n"
+                          "echo \"$(date) starting apply (in-place file swap)\" >> \"$LOG\"\n"
+                          "if command -v rsync >/dev/null 2>&1; then\n"
+                          "  rsync -a --delete \"$STAGING/\" \"$TARGET/\" >> \"$LOG\" 2>&1\n"
+                          "  RC=$?\n"
+                          "else\n"
+                          "  cp -Rf \"$STAGING/.\" \"$TARGET/\" >> \"$LOG\" 2>&1\n"
+                          "  RC=$?\n"
+                          "  echo \"$(date) note: rsync unavailable, used cp (stale files may remain)\" >> \"$LOG\"\n"
+                          "fi\n"
+                          "if [ \"$RC\" = \"0\" ]; then\n"
+                          "%7"
                           "  echo \"$(date) applied ok\" >> \"$LOG\"\n"
                           "else\n"
-                          "  echo \"$(date) apply FAILED, rolled back\" >> \"$LOG\"\n"
+                          "  echo \"$(date) apply FAILED (rc=$RC)\" >> \"$LOG\"\n"
                           "fi\n"
-                          "%6\n")
+                          "rm -rf \"$STAGING_PARENT\"\n"
+                          "rm -f \"$ZIP\"\n"
+                          "%8\n")
                           .arg(waitPid)
                           .arg(log)
                           .arg(targetDir)
                           .arg(stagingRoot)
+                          .arg(stagingParentDir)
+                          .arg(zipPath)
                           .arg(codesignCmd)
                           .arg(relaunchCmd);
     QFile f(scriptPath);
@@ -333,7 +330,7 @@ void UpdateInstaller::prepareAndApply(const UpdateInfo& info, std::function<void
         QString targetDir = targetDirectory();
         qint64 pid = QCoreApplication::applicationPid();
         appendLog(QString("prepared: staging=%1 target=%2 pid=%3").arg(stagingRoot, targetDir).arg(pid));
-        if (!launchApplier(stagingRoot, targetDir, pid, &err)) {
+        if (!launchApplier(stagingRoot, stagingDir, targetDir, zipPath, pid, &err)) {
             onError("не удалось запустить скрипт обновления: " + err);
             return;
         }
