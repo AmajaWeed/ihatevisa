@@ -21,18 +21,31 @@ struct Guide {
 
 enum class CornerPosition { TopLeft, TopRight, BottomLeft, BottomRight };
 
-// Cyan/Magenta/Yellow shift for one luminance zone, -50..50. Ported from
-// ccData (line 324).
-struct CcZone {
-    int c = 0;
-    int m = 0;
-    int y = 0;
-};
+// Camera-Raw-style tone adjustments, all -100..100 (0 = no change) unless
+// noted. Replaces the earlier simple brightness/contrast/gamma/saturation
+// + 3-way CMY corrector with the White Balance / Tone / Presence / Detail
+// grouping used by Adobe Camera Raw and Lightroom's Basic panel.
+struct RawAdjustments {
+    // White balance
+    int temperature = 0;  // warm (+, more red/less blue) <-> cool (-)
+    int tint = 0;          // magenta (+) <-> green (-)
 
-struct ColorCorrection {
-    CcZone shadows;
-    CcZone mid;
-    CcZone high;
+    // Tone
+    int exposure = 0;    // +-2 EV at the extremes, applied in linear light
+    int contrast = 0;
+    int highlights = 0;  // luminance-weighted toward the bright end
+    int shadows = 0;      // luminance-weighted toward the dark end
+    int whites = 0;       // narrower/stronger than highlights, sets the white point
+    int blacks = 0;        // narrower/stronger than shadows, sets the black point
+
+    // Detail (local contrast via unsharp-mask at increasing blur radius)
+    int texture = 0;   // small radius — fine detail
+    int clarity = 0;    // medium radius — mid-frequency "punch"
+    int dehaze = 0;      // larger radius + a haze-veil model
+
+    // Presence
+    int vibrance = 0;    // saturation boost weighted toward less-saturated pixels
+    int saturation = 0;  // uniform saturation
 };
 
 // All editing state, ported 1:1 from the flat global variables in
@@ -51,16 +64,13 @@ struct EditorState {
 
     Guide guide;
     std::string bgColorHex = "#ffffff";
-    ColorCorrection cc;
+    RawAdjustments adj;
 
-    int brightness = 0;    // -100..100
-    int contrast = 0;      // -100..100
-    int gammaPercent = 100; // 20..300, ratio = gammaPercent/100
-    int saturationPercent = 100;  // 0..300
     bool blackAndWhite = false;
     bool ovalOverlay = false;
     bool cornerOverlay = false;
-    CornerPosition cornerPosition = CornerPosition::BottomRight;
+    CornerPosition cornerPosition = CornerPosition::BottomRight;  // UI only offers BottomLeft/BottomRight
+    double cornerSizeMm = 12;
 
     // Print composer (line 253-262).
     int printDpi = 300;

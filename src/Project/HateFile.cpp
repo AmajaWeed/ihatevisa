@@ -16,20 +16,40 @@ namespace {
 
 QByteArray toJson(const QJsonObject& obj) { return QJsonDocument(obj).toJson(QJsonDocument::Indented); }
 
-QJsonObject ccZoneToJson(const core::CcZone& z) {
+QJsonObject rawAdjustmentsToJson(const core::RawAdjustments& a) {
     QJsonObject o;
-    o["c"] = z.c;
-    o["m"] = z.m;
-    o["y"] = z.y;
+    o["temperature"] = a.temperature;
+    o["tint"] = a.tint;
+    o["exposure"] = a.exposure;
+    o["contrast"] = a.contrast;
+    o["highlights"] = a.highlights;
+    o["shadows"] = a.shadows;
+    o["whites"] = a.whites;
+    o["blacks"] = a.blacks;
+    o["texture"] = a.texture;
+    o["clarity"] = a.clarity;
+    o["dehaze"] = a.dehaze;
+    o["vibrance"] = a.vibrance;
+    o["saturation"] = a.saturation;
     return o;
 }
 
-core::CcZone ccZoneFromJson(const QJsonObject& o) {
-    core::CcZone z;
-    z.c = o.value("c").toInt(0);
-    z.m = o.value("m").toInt(0);
-    z.y = o.value("y").toInt(0);
-    return z;
+core::RawAdjustments rawAdjustmentsFromJson(const QJsonObject& o) {
+    core::RawAdjustments a;
+    a.temperature = o.value("temperature").toInt(0);
+    a.tint = o.value("tint").toInt(0);
+    a.exposure = o.value("exposure").toInt(0);
+    a.contrast = o.value("contrast").toInt(0);
+    a.highlights = o.value("highlights").toInt(0);
+    a.shadows = o.value("shadows").toInt(0);
+    a.whites = o.value("whites").toInt(0);
+    a.blacks = o.value("blacks").toInt(0);
+    a.texture = o.value("texture").toInt(0);
+    a.clarity = o.value("clarity").toInt(0);
+    a.dehaze = o.value("dehaze").toInt(0);
+    a.vibrance = o.value("vibrance").toInt(0);
+    a.saturation = o.value("saturation").toInt(0);
+    return a;
 }
 
 QString assetName(int id, const QString& ext, bool processed) {
@@ -116,18 +136,12 @@ bool save(const QString& path, const Project& project, QString* error) {
     guide["rotation"] = s.guide.rotation;
     layout["guide"] = guide;
     layout["bgColorHex"] = QString::fromStdString(s.bgColorHex);
-    QJsonObject cc;
-    cc["shadows"] = ccZoneToJson(s.cc.shadows);
-    cc["mid"] = ccZoneToJson(s.cc.mid);
-    cc["high"] = ccZoneToJson(s.cc.high);
-    layout["cc"] = cc;
-    layout["brightness"] = s.brightness;
-    layout["contrast"] = s.contrast;
-    layout["gammaPercent"] = s.gammaPercent;
-    layout["saturationPercent"] = s.saturationPercent;
+    layout["adj"] = rawAdjustmentsToJson(s.adj);
     layout["blackAndWhite"] = s.blackAndWhite;
     layout["ovalOverlay"] = s.ovalOverlay;
     layout["cornerOverlay"] = s.cornerOverlay;
+    layout["cornerPosition"] = static_cast<int>(s.cornerPosition);
+    layout["cornerSizeMm"] = s.cornerSizeMm;
 
     QJsonArray photosArr;
     for (const auto& ph : project.photos) {
@@ -232,17 +246,13 @@ bool open(const QString& path, Project& outProject, QString* error) {
     s.guide.scale = guide.value("scale").toDouble(1);
     s.guide.rotation = guide.value("rotation").toDouble(0);
     s.bgColorHex = layout.value("bgColorHex").toString("#ffffff").toStdString();
-    QJsonObject cc = layout.value("cc").toObject();
-    s.cc.shadows = ccZoneFromJson(cc.value("shadows").toObject());
-    s.cc.mid = ccZoneFromJson(cc.value("mid").toObject());
-    s.cc.high = ccZoneFromJson(cc.value("high").toObject());
-    s.brightness = layout.value("brightness").toInt(0);
-    s.contrast = layout.value("contrast").toInt(0);
-    s.gammaPercent = layout.value("gammaPercent").toInt(100);
-    s.saturationPercent = layout.value("saturationPercent").toInt(100);
+    s.adj = rawAdjustmentsFromJson(layout.value("adj").toObject());
     s.blackAndWhite = layout.value("blackAndWhite").toBool(false);
     s.ovalOverlay = layout.value("ovalOverlay").toBool(false);
     s.cornerOverlay = layout.value("cornerOverlay").toBool(false);
+    s.cornerPosition = static_cast<core::CornerPosition>(
+        layout.value("cornerPosition").toInt(static_cast<int>(core::CornerPosition::BottomRight)));
+    s.cornerSizeMm = layout.value("cornerSizeMm").toDouble(12.0);
 
     QByteArray printBytes;
     zipReadEntry(z, "print-settings.json", printBytes);

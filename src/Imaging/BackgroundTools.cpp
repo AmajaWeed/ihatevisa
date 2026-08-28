@@ -37,21 +37,52 @@ QImage autoClean(const QImage& src, int threshold) {
     double bgG = (c1[1] + c2[1] + c3[1] + c4[1]) / 4;
     double bgB = (c1[2] + c2[2] + c3[2] + c4[2]) / 4;
 
+    // Whitening by color-distance alone would also hit anything in the
+    // photo that happens to be a similar shade — a light shirt, pale skin,
+    // hair with a bright highlight — even in the middle of the frame,
+    // nowhere near the actual backdrop. The fix is connectivity, not just
+    // color: only pixels reachable from the image border through an
+    // unbroken chain of background-colored neighbors count as background.
+    // A white collar surrounded by non-background color is not connected
+    // to the border and is correctly left alone, no matter how close its
+    // color is to the sampled corners.
     double th = threshold > 0 ? threshold : 45;
+    std::vector<unsigned char> visited(static_cast<size_t>(w) * h, 0);
+    std::vector<QPoint> stack;
+    stack.reserve(2 * (w + h));
+    for (int x = 0; x < w; ++x) {
+        stack.emplace_back(x, 0);
+        stack.emplace_back(x, h - 1);
+    }
     for (int y = 0; y < h; ++y) {
-        auto* line = reinterpret_cast<QRgb*>(img.scanLine(y));
-        for (int x = 0; x < w; ++x) {
-            QRgb px = line[x];
-            double dr = qRed(px) - bgR, dg = qGreen(px) - bgG, db = qBlue(px) - bgB;
-            double dist = std::sqrt(dr * dr + dg * dg + db * db);
-            if (dist < th) {
-                double strength = 1.0 - (dist / th);
-                int r = qRed(px) + static_cast<int>((255 - qRed(px)) * strength);
-                int g = qGreen(px) + static_cast<int>((255 - qGreen(px)) * strength);
-                int b = qBlue(px) + static_cast<int>((255 - qBlue(px)) * strength);
-                line[x] = qRgba(std::clamp(r, 0, 255), std::clamp(g, 0, 255), std::clamp(b, 0, 255), qAlpha(px));
-            }
-        }
+        stack.emplace_back(0, y);
+        stack.emplace_back(w - 1, y);
+    }
+
+    while (!stack.empty()) {
+        QPoint p = stack.back();
+        stack.pop_back();
+        int x = p.x(), y = p.y();
+        if (x < 0 || y < 0 || x >= w || y >= h) continue;
+        size_t vi = static_cast<size_t>(y) * w + x;
+        if (visited[vi]) continue;
+        visited[vi] = 1;
+
+        QRgb px = img.pixel(x, y);
+        double dr = qRed(px) - bgR, dg = qGreen(px) - bgG, db = qBlue(px) - bgB;
+        double dist = std::sqrt(dr * dr + dg * dg + db * db);
+        if (dist >= th) continue;  // not background-colored: stop, don't propagate past it either
+
+        double strength = 1.0 - (dist / th);
+        int r = qRed(px) + static_cast<int>((255 - qRed(px)) * strength);
+        int g = qGreen(px) + static_cast<int>((255 - qGreen(px)) * strength);
+        int b = qBlue(px) + static_cast<int>((255 - qBlue(px)) * strength);
+        img.setPixel(x, y, qRgba(std::clamp(r, 0, 255), std::clamp(g, 0, 255), std::clamp(b, 0, 255), qAlpha(px)));
+
+        stack.emplace_back(x + 1, y);
+        stack.emplace_back(x - 1, y);
+        stack.emplace_back(x, y + 1);
+        stack.emplace_back(x, y - 1);
     }
     return img;
 }

@@ -7,6 +7,7 @@
 #include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
+#include <QFrame>
 #include <QGroupBox>
 #include <QHBoxLayout>
 #include <QIcon>
@@ -23,6 +24,7 @@
 #include <QPrinter>
 #include <QScrollArea>
 #include <QSignalBlocker>
+#include <QWheelEvent>
 #include <QVBoxLayout>
 #include <cmath>
 
@@ -45,8 +47,22 @@ using core::EditorEngine::onTopMarginChange;
 using core::EditorEngine::onWidthOrHeightChange;
 
 namespace {
+
+// A plain QSlider grabs wheel events (nudging its own value) instead of
+// letting them bubble up to scroll the enclosing QScrollArea — barely
+// noticeable with one or two sliders, but the Ready panel packs 13 of
+// them, so without this every scroll attempt risks silently changing
+// whatever slider happens to be under the cursor.
+class NoWheelSlider : public QSlider {
+public:
+    using QSlider::QSlider;
+
+protected:
+    void wheelEvent(QWheelEvent* e) override { e->ignore(); }
+};
+
 QSlider* makeSlider(int lo, int hi, int val) {
-    auto* s = new QSlider(Qt::Horizontal);
+    auto* s = new NoWheelSlider(Qt::Horizontal);
     s->setRange(lo, hi);
     s->setValue(val);
     return s;
@@ -167,13 +183,21 @@ void MainWindow::buildUi() {
     topLayout->addWidget(importBtn);
     rootLayout->addWidget(topBar);
 
-    // Tab bar
+    // Tab bar — plain left-aligned flat tabs directly under the top bar,
+    // matching the reference screenshot's layout (no icons, no stretch).
     tabBar_ = new QTabBar(central);
-    tabBar_->addTab("📐 Размеры");
-    tabBar_->addTab("🖼 Готовая фотография");
-    tabBar_->addTab("🖨 Печать");
+    tabBar_->setExpanding(false);
+    tabBar_->setShape(QTabBar::RoundedNorth);
+    tabBar_->addTab("Размеры");
+    tabBar_->addTab("Готовая фотография");
+    tabBar_->addTab("Печать");
     connect(tabBar_, &QTabBar::currentChanged, this, &MainWindow::switchTab);
-    rootLayout->addWidget(tabBar_);
+    auto* tabBarRow = new QHBoxLayout();
+    tabBarRow->setContentsMargins(0, 0, 0, 0);
+    tabBarRow->setSpacing(0);
+    tabBarRow->addWidget(tabBar_);
+    tabBarRow->addStretch();
+    rootLayout->addLayout(tabBarRow);
 
     // Body: thumbs | center | side panel
     auto* body = new QWidget(central);
@@ -199,11 +223,25 @@ void MainWindow::buildUi() {
     centerStack_->addWidget(printPreview_);
     bodyLayout->addWidget(centerStack_, 1);
 
+    // Each panel is wrapped in its own scroll area — the Ready panel in
+    // particular (background tools + full tone-adjustment set) is taller
+    // than fits in a typical window, and without this the bottom sliders
+    // (Detail/Presence groups, the reset button) would just be cut off
+    // with no way to reach them.
+    auto wrapScroll = [](QWidget* content) {
+        auto* scroll = new QScrollArea();
+        scroll->setWidget(content);
+        scroll->setWidgetResizable(true);
+        scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+        scroll->setFrameShape(QFrame::NoFrame);
+        return scroll;
+    };
+
     sidePanels_ = new QStackedWidget(body);
     sidePanels_->setFixedWidth(300);
-    sidePanels_->addWidget(buildSizesPanel());
-    sidePanels_->addWidget(buildReadyPanel());
-    sidePanels_->addWidget(buildPrintPanel());
+    sidePanels_->addWidget(wrapScroll(buildSizesPanel()));
+    sidePanels_->addWidget(wrapScroll(buildReadyPanel()));
+    sidePanels_->addWidget(wrapScroll(buildPrintPanel()));
     bodyLayout->addWidget(sidePanels_);
 
     rootLayout->addWidget(body, 1);
@@ -337,17 +375,18 @@ QWidget* MainWindow::buildSizesPanel() {
     ol->addWidget(ovalCheck_);
     ol->addWidget(cornerCheck_);
 
+    // Only the two bottom corners are offered — a top corner would clip
+    // into the head/face area on a document-photo crop, which is never
+    // what this is for.
     auto* cornerPosRow = new QHBoxLayout();
     struct CornerBtn {
         core::CornerPosition pos;
         QString label;
     };
-    for (const auto& cb : {CornerBtn{core::CornerPosition::TopLeft, "↖"}, CornerBtn{core::CornerPosition::TopRight, "↗"},
-                            CornerBtn{core::CornerPosition::BottomLeft, "↙"},
-                            CornerBtn{core::CornerPosition::BottomRight, "↘"}}) {
+    for (const auto& cb :
+         {CornerBtn{core::CornerPosition::BottomLeft, "↙ Слева"}, CornerBtn{core::CornerPosition::BottomRight, "↘ Справа"}}) {
         auto* b = new QPushButton(cb.label);
         b->setCheckable(true);
-        b->setFixedWidth(32);
         b->setChecked(cb.pos == state_.cornerPosition);
         connect(b, &QPushButton::clicked, this, [this, pos = cb.pos, b] {
             state_.cornerPosition = pos;
@@ -358,6 +397,19 @@ QWidget* MainWindow::buildSizesPanel() {
         cornerPosRow->addWidget(b);
     }
     ol->addLayout(cornerPosRow);
+
+    auto* cornerSizeRow = new QHBoxLayout();
+    cornerSizeRow->addWidget(new QLabel("Высота уголка"));
+    cornerSizeSlider_ = makeSlider(4, 40, static_cast<int>(std::round(state_.cornerSizeMm)));
+    cornerSizeRow->addWidget(cornerSizeSlider_, 1);
+    cornerSizeValueLabel_ = new QLabel(QString::number(state_.cornerSizeMm, 'f', 0) + " мм");
+    cornerSizeRow->addWidget(cornerSizeValueLabel_);
+    connect(cornerSizeSlider_, &QSlider::valueChanged, this, [this](int v) {
+        state_.cornerSizeMm = v;
+        cornerSizeValueLabel_->setText(QString::number(v) + " мм");
+        refresh();
+    });
+    ol->addLayout(cornerSizeRow);
     layout->addWidget(overlayBox);
 
     auto* actionsBox = new QGroupBox("Действия");
@@ -455,7 +507,9 @@ QWidget* MainWindow::buildReadyPanel() {
 
     auto* colorBox = new QGroupBox("Цвет фона");
     auto* cl = new QHBoxLayout(colorBox);
-    static const char* presets[] = {"#ffffff", "#f0f0f0", "#e0e0e0", "#d5dbe6", "#cce5ff", "#ffeedd", "#f5f5dc"};
+    // Only gray/white and blue shades — matches the actual document-photo
+    // background requirements (most formats reject warm/colored backdrops).
+    static const char* presets[] = {"#ffffff", "#f0f0f0", "#e0e0e0", "#d5dbe6", "#cce5ff"};
     for (const char* hex : presets) {
         auto* sw = new QPushButton();
         sw->setFixedSize(22, 22);
@@ -469,93 +523,79 @@ QWidget* MainWindow::buildReadyPanel() {
     }
     layout->addWidget(colorBox);
 
-    auto* adjBox = new QGroupBox("Инструменты");
-    auto* adl = new QVBoxLayout(adjBox);
-    auto addSlider = [&](const QString& label, QSlider*& slider, int lo, int hi, int val) {
+    // Camera-Raw-style tone panel (Adobe Camera Raw / Lightroom's Basic
+    // panel grouping: White Balance / Tone / Detail / Presence), replacing
+    // the earlier simple brightness/contrast/gamma/saturation + 3-way CMY
+    // corrector with the same real per-pixel algorithms ACR uses in spirit
+    // (see Imaging/Adjustments.cpp): white-balance channel shift, exposure
+    // in linear light, luminance-weighted tone regions, local-contrast
+    // unsharp-mask at increasing radius for texture/clarity/dehaze, and a
+    // saturation-protecting vibrance.
+    auto addRawSlider = [&](QVBoxLayout* into, const QString& label, int* field, int lo = -100, int hi = 100) {
         auto* row = new QHBoxLayout();
-        row->addWidget(new QLabel(label));
-        slider = makeSlider(lo, hi, val);
+        auto* nameLabel = new QLabel(label);
+        nameLabel->setMinimumWidth(110);
+        row->addWidget(nameLabel);
+        auto* slider = makeSlider(lo, hi, *field);
         row->addWidget(slider, 1);
-        adl->addLayout(row);
+        auto* val = new QLabel(QString::number(*field));
+        val->setMinimumWidth(30);
+        val->setAlignment(Qt::AlignRight);
+        row->addWidget(val);
+        into->addLayout(row);
+        connect(slider, &QSlider::valueChanged, this, [this, field, val](int v) {
+            *field = v;
+            val->setText(QString::number(v));
+            refresh();
+        });
+        rawSliders_.push_back(slider);
+        rawSliderFields_.push_back(field);
+        rawSliderLabels_.push_back(val);
     };
-    addSlider("Яркость", brightSlider_, -100, 100, 0);
-    addSlider("Контраст", contrastSlider_, -100, 100, 0);
-    addSlider("Гамма", gammaSlider_, 20, 300, 100);
-    addSlider("Насыщ.", satSlider_, 0, 300, 100);
-    connect(brightSlider_, &QSlider::valueChanged, this, [this](int v) {
-        state_.brightness = v;
-        refresh();
-    });
-    connect(contrastSlider_, &QSlider::valueChanged, this, [this](int v) {
-        state_.contrast = v;
-        refresh();
-    });
-    connect(gammaSlider_, &QSlider::valueChanged, this, [this](int v) {
-        state_.gammaPercent = v;
-        refresh();
-    });
-    connect(satSlider_, &QSlider::valueChanged, this, [this](int v) {
-        state_.saturationPercent = v;
-        refresh();
-    });
+
+    auto* wbBox = new QGroupBox("Баланс белого");
+    auto* wbLayout = new QVBoxLayout(wbBox);
+    addRawSlider(wbLayout, "Температура", &state_.adj.temperature);
+    addRawSlider(wbLayout, "Оттенок", &state_.adj.tint);
+    layout->addWidget(wbBox);
+
+    auto* toneBox = new QGroupBox("Тон");
+    auto* toneLayout = new QVBoxLayout(toneBox);
+    addRawSlider(toneLayout, "Экспозиция", &state_.adj.exposure);
+    addRawSlider(toneLayout, "Контраст", &state_.adj.contrast);
+    addRawSlider(toneLayout, "Светлые области", &state_.adj.highlights);
+    addRawSlider(toneLayout, "Тени", &state_.adj.shadows);
+    addRawSlider(toneLayout, "Белые", &state_.adj.whites);
+    addRawSlider(toneLayout, "Черные", &state_.adj.blacks);
+    layout->addWidget(toneBox);
+
+    auto* detailBox = new QGroupBox("Детализация");
+    auto* detailLayout = new QVBoxLayout(detailBox);
+    addRawSlider(detailLayout, "Текстура", &state_.adj.texture);
+    addRawSlider(detailLayout, "Четкость", &state_.adj.clarity);
+    addRawSlider(detailLayout, "Удаление дымки", &state_.adj.dehaze);
+    layout->addWidget(detailBox);
+
+    auto* presenceBox = new QGroupBox("Присутствие");
+    auto* presenceLayout = new QVBoxLayout(presenceBox);
+    addRawSlider(presenceLayout, "Красочность", &state_.adj.vibrance);
+    addRawSlider(presenceLayout, "Насыщенность", &state_.adj.saturation);
     bwCheck_ = new QCheckBox("Чёрно-белое");
     connect(bwCheck_, &QCheckBox::toggled, this, [this](bool v) {
         state_.blackAndWhite = v;
         refresh();
     });
-    adl->addWidget(bwCheck_);
-    layout->addWidget(adjBox);
+    presenceLayout->addWidget(bwCheck_);
+    layout->addWidget(presenceBox);
 
-    auto* ccBox = new QGroupBox("Цветокоррекция");
-    auto* ccl = new QVBoxLayout(ccBox);
-    auto* ccTabsRow = new QHBoxLayout();
-    for (const auto& [key, title] : {std::pair{"shadows", "Тени"}, {"mid", "Центр"}, {"high", "Блики"}}) {
-        auto* b = new QPushButton(title);
-        b->setCheckable(true);
-        b->setChecked(key == std::string("shadows"));
-        connect(b, &QPushButton::clicked, this, [this, key = std::string(key)] {
-            ccTab_ = key;
-            const core::CcZone& z = key == "shadows" ? state_.cc.shadows : (key == "mid" ? state_.cc.mid : state_.cc.high);
-            QSignalBlocker b1(ccCSlider_), b2(ccMSlider_), b3(ccYSlider_);
-            ccCSlider_->setValue(z.c);
-            ccMSlider_->setValue(z.m);
-            ccYSlider_->setValue(z.y);
-            ccCVal_->setText(QString::number(z.c));
-            ccMVal_->setText(QString::number(z.m));
-            ccYVal_->setText(QString::number(z.y));
-        });
-        ccTabsRow->addWidget(b);
-    }
-    ccl->addLayout(ccTabsRow);
-    auto addCcRow = [&](const QString& swatchColor, QSlider*& slider, QLabel*& val) {
-        auto* row = new QHBoxLayout();
-        auto* sw = new QLabel();
-        sw->setFixedSize(14, 14);
-        sw->setStyleSheet(QString("background:%1;").arg(swatchColor));
-        row->addWidget(sw);
-        slider = makeSlider(-50, 50, 0);
-        row->addWidget(slider, 1);
-        val = new QLabel("0");
-        row->addWidget(val);
-        ccl->addLayout(row);
-    };
-    addCcRow("cyan", ccCSlider_, ccCVal_);
-    addCcRow("magenta", ccMSlider_, ccMVal_);
-    addCcRow("yellow", ccYSlider_, ccYVal_);
-    auto onCcSlider = [this] {
-        core::CcZone& z = ccTab_ == "shadows" ? state_.cc.shadows : (ccTab_ == "mid" ? state_.cc.mid : state_.cc.high);
-        z.c = ccCSlider_->value();
-        z.m = ccMSlider_->value();
-        z.y = ccYSlider_->value();
-        ccCVal_->setText(QString::number(z.c));
-        ccMVal_->setText(QString::number(z.m));
-        ccYVal_->setText(QString::number(z.y));
+    auto* resetAdjBtn = new QPushButton("↺ Сбросить всё");
+    connect(resetAdjBtn, &QPushButton::clicked, this, [this] {
+        pushUndo();
+        state_.adj = core::RawAdjustments{};
+        syncRawSlidersToUi();
         refresh();
-    };
-    connect(ccCSlider_, &QSlider::valueChanged, this, onCcSlider);
-    connect(ccMSlider_, &QSlider::valueChanged, this, onCcSlider);
-    connect(ccYSlider_, &QSlider::valueChanged, this, onCcSlider);
-    layout->addWidget(ccBox);
+    });
+    layout->addWidget(resetAdjBtn);
 
     layout->addStretch();
     return panel;
@@ -760,6 +800,15 @@ void MainWindow::syncFormatFieldsToUi() {
     formatDesc_->setText(QString::fromStdString(f.name) + "\n" + QString::fromStdString(f.description));
 }
 
+void MainWindow::syncRawSlidersToUi() {
+    for (size_t i = 0; i < rawSliders_.size(); ++i) {
+        QSignalBlocker b(rawSliders_[i]);
+        int v = *rawSliderFields_[i];
+        rawSliders_[i]->setValue(v);
+        rawSliderLabels_[i]->setText(QString::number(v));
+    }
+}
+
 void MainWindow::pushUndo() {
     undoStack_.push_back(state_);
     static constexpr size_t kMaxUndo = 40;
@@ -771,13 +820,9 @@ void MainWindow::undo() {
     state_ = undoStack_.back();
     undoStack_.pop_back();
     syncFormatFieldsToUi();
-    QSignalBlocker b2(brightSlider_), b3(contrastSlider_), b4(gammaSlider_), b5(satSlider_), b6(bwCheck_),
-        b7(ovalCheck_), b8(cornerCheck_);
+    QSignalBlocker b6(bwCheck_), b7(ovalCheck_), b8(cornerCheck_);
     rotationValueLabel_->setText(QString::number(state_.guide.rotation, 'f', 1) + "°");
-    brightSlider_->setValue(state_.brightness);
-    contrastSlider_->setValue(state_.contrast);
-    gammaSlider_->setValue(state_.gammaPercent);
-    satSlider_->setValue(state_.saturationPercent);
+    syncRawSlidersToUi();
     bwCheck_->setChecked(state_.blackAndWhite);
     ovalCheck_->setChecked(state_.ovalOverlay);
     cornerCheck_->setChecked(state_.cornerOverlay);
@@ -1061,15 +1106,11 @@ void MainWindow::openProject(const QString& path) {
     projectPath_ = path;
     editor_->setPhoto(activePhoto());
     syncFormatFieldsToUi();
-    QSignalBlocker b1(ovalCheck_), b2(cornerCheck_), b3(bwCheck_), b4(brightSlider_), b5(contrastSlider_),
-        b6(gammaSlider_), b7(satSlider_), b8(lockVerticalCheck_);
+    QSignalBlocker b1(ovalCheck_), b2(cornerCheck_), b3(bwCheck_), b8(lockVerticalCheck_);
     ovalCheck_->setChecked(state_.ovalOverlay);
     cornerCheck_->setChecked(state_.cornerOverlay);
     bwCheck_->setChecked(state_.blackAndWhite);
-    brightSlider_->setValue(state_.brightness);
-    contrastSlider_->setValue(state_.contrast);
-    gammaSlider_->setValue(state_.gammaPercent);
-    satSlider_->setValue(state_.saturationPercent);
+    syncRawSlidersToUi();
     lockVerticalCheck_->setChecked(state_.lockVertical);
     rotationValueLabel_->setText(QString::number(state_.guide.rotation, 'f', 1) + "°");
     refresh();

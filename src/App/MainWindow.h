@@ -49,6 +49,7 @@ private:
     void pushUndo();
     void undo();
     void resetGuide();
+    void syncRawSlidersToUi();
     void refresh();
     void refreshThumbs();
     void refreshInfo();
@@ -106,6 +107,8 @@ private:
     QCheckBox* ovalCheck_ = nullptr;
     QCheckBox* cornerCheck_ = nullptr;
     std::vector<QPushButton*> cornerPosButtons_;
+    QSlider* cornerSizeSlider_ = nullptr;
+    QLabel* cornerSizeValueLabel_ = nullptr;
     QCheckBox* bwCheck_ = nullptr;
 
     // Ready panel
@@ -115,13 +118,11 @@ private:
     QPushButton* restoreBrushBtn_ = nullptr;
     QPushButton* eraseBrushBtn_ = nullptr;
     QSlider* brushSizeSlider_ = nullptr;
-    QSlider* brightSlider_ = nullptr;
-    QSlider* contrastSlider_ = nullptr;
-    QSlider* gammaSlider_ = nullptr;
-    QSlider* satSlider_ = nullptr;
-    std::string ccTab_ = "shadows";
-    QSlider *ccCSlider_ = nullptr, *ccMSlider_ = nullptr, *ccYSlider_ = nullptr;
-    QLabel *ccCVal_ = nullptr, *ccMVal_ = nullptr, *ccYVal_ = nullptr;
+    // Temperature..Saturation, in the order added by buildReadyPanel — kept
+    // in lockstep so syncRawSlidersToUi() can refresh all three from state_.
+    std::vector<QSlider*> rawSliders_;
+    std::vector<int*> rawSliderFields_;
+    std::vector<QLabel*> rawSliderLabels_;
 
     // Print panel
     QSpinBox* printDpiSpin_ = nullptr;

@@ -35,8 +35,9 @@ void paintOvalMask(QPainter& p, const QRectF& rect, const QColor& bg) {
     p.restore();
 }
 
-void paintCornerMask(QPainter& p, double w, double h, double pxMm, const QColor& color, CornerPosition pos) {
-    double cs = 12 * pxMm;
+void paintCornerMask(QPainter& p, double w, double h, double pxMm, const QColor& color, CornerPosition pos,
+                      double sizeMm) {
+    double cs = sizeMm * pxMm;
     double cx = (pos == CornerPosition::TopLeft || pos == CornerPosition::BottomLeft) ? 0 : w;
     double cy = (pos == CornerPosition::TopLeft || pos == CornerPosition::TopRight) ? 0 : h;
     double sx = cx == 0 ? cs : -cs;
@@ -155,7 +156,7 @@ QImage render(const EditorState& s, const PhotoDocument& doc, int canvasW, int c
     if (s.cornerOverlay) {
         QPainter p(&canvas);
         QColor c = preview ? bgColor(s) : QColor(200, 200, 200, 128);
-        paintCornerMask(p, dw, dh, pxMm, c, s.cornerPosition);
+        paintCornerMask(p, dw, dh, pxMm, c, s.cornerPosition, s.cornerSizeMm);
     }
 
     return canvas;

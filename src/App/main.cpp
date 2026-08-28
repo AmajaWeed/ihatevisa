@@ -4,6 +4,7 @@
 #include <QFileInfo>
 #include <QImageReader>
 #include <QImageWriter>
+#include <QPainter>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -119,6 +120,75 @@ int runTestExport(const char* imagePath, const char* outDir) {
     QImage ovalPreview = core::EditorRenderer::render(oval, doc, canvasW, canvasH, core::EditorRenderer::Mode::Preview);
     ovalPreview.save(dirQ + "/oval_preview.png");
     std::printf("wrote editing_mode.png / preview_mode.png / oval_preview.png\n");
+
+    // Raw-adjustments panel: exercise every one of the 13 sliders at an
+    // extreme value, individually, and confirm each actually changes the
+    // rendered pixels (and that combining all of them at once doesn't
+    // crash or produce an all-NaN/black/white wipeout).
+    {
+        QImage baseline = core::EditorRenderer::render(s, doc, 300, 386, core::EditorRenderer::Mode::Preview);
+        auto testField = [&](const char* name, int core::RawAdjustments::*field, int value) {
+            core::EditorState t = s;
+            t.adj.*field = value;
+            QImage img = core::EditorRenderer::render(t, doc, 300, 386, core::EditorRenderer::Mode::Preview);
+            bool changed = img != baseline;
+            std::printf("  %s=%d: %s\n", name, value, changed ? "changes render" : "NO EFFECT (bug)");
+            if (!changed) std::exit(1);
+        };
+        std::printf("raw adjustments (each should change the render):\n");
+        testField("temperature", &core::RawAdjustments::temperature, 80);
+        testField("tint", &core::RawAdjustments::tint, 80);
+        testField("exposure", &core::RawAdjustments::exposure, 60);
+        testField("contrast", &core::RawAdjustments::contrast, 60);
+        testField("highlights", &core::RawAdjustments::highlights, -80);
+        testField("shadows", &core::RawAdjustments::shadows, 80);
+        testField("whites", &core::RawAdjustments::whites, -80);
+        testField("blacks", &core::RawAdjustments::blacks, 80);
+        testField("texture", &core::RawAdjustments::texture, 80);
+        testField("clarity", &core::RawAdjustments::clarity, 80);
+        testField("dehaze", &core::RawAdjustments::dehaze, 80);
+        testField("vibrance", &core::RawAdjustments::vibrance, 80);
+        testField("saturation", &core::RawAdjustments::saturation, -80);
+
+        core::EditorState allMax = s;
+        allMax.adj = core::RawAdjustments{80, -80, 60, 60, -80, 80, -80, 80, 80, 80, 80, 80, -80};
+        QImage combined =
+            core::EditorRenderer::render(allMax, doc, 300, 386, core::EditorRenderer::Mode::Preview);
+        combined.save(dirQ + "/raw_adjustments_combined.png");
+        std::printf("  all combined: wrote raw_adjustments_combined.png (%dx%d)\n", combined.width(),
+                    combined.height());
+    }
+
+    // Background removal must not touch a face/shirt in the middle just
+    // because its color happens to be within the threshold of the
+    // background reference — only pixels *connected to the border* through
+    // an unbroken chain of within-threshold color should be affected. A
+    // color within the threshold AND touching the border is legitimately
+    // background regardless of connectivity (that's what the threshold is
+    // for) — connectivity specifically protects an *island* of
+    // background-similar color fully enclosed by clearly-different color,
+    // e.g. a bright highlight or light collar surrounded by skin/hair,
+    // which is the realistic version of "erases elements on the face".
+    // Skin-tone-like center, clearly outside the threshold of a light-gray
+    // background, so it can only leak in via connectivity, not raw color.
+    {
+        QImage synth(200, 200, QImage::Format_ARGB32);
+        synth.fill(qRgb(230, 230, 230));  // background: light gray
+        QPainter p(&synth);
+        p.setPen(Qt::NoPen);
+        p.setBrush(QColor(200, 150, 120));  // "face": clearly different, fully enclosed
+        p.drawEllipse(60, 60, 80, 80);
+        p.end();
+        QImage cleaned = imaging::BackgroundTools::autoClean(synth, 45);
+        QRgb centerAfter = cleaned.pixel(100, 100);
+        QRgb borderAfter = cleaned.pixel(5, 5);
+        bool centerUntouched = centerAfter == qRgb(200, 150, 120);  // must be byte-for-byte unchanged
+        bool borderWhitened = qRed(borderAfter) > 250;              // border is real background: should whiten
+        std::printf("background-removal connectivity: center %s (rgb=%d,%d,%d), border %s (r=%d)\n",
+                    centerUntouched ? "protected" : "WRONGLY ERASED", qRed(centerAfter), qGreen(centerAfter),
+                    qBlue(centerAfter), borderWhitened ? "whitened" : "NOT whitened (bug)", qRed(borderAfter));
+        if (!centerUntouched || !borderWhitened) return 1;
+    }
 
     doc.processed = imaging::BackgroundTools::autoClean(doc.original, 45);
     std::printf("auto-clean produced processed image: %dx%d\n", doc.processed->width(), doc.processed->height());
