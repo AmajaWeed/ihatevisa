@@ -165,8 +165,10 @@ void EditorWidget::mouseMoveEvent(QMouseEvent* e) {
 }
 
 void EditorWidget::mouseReleaseEvent(QMouseEvent*) {
+    bool wasDragging = drag_ != DragType::None;
     drag_ = DragType::None;
     setCursor(tool_ == ToolMode::Guide ? Qt::ArrowCursor : Qt::CrossCursor);
+    if (wasDragging && onDragEnd) onDragEnd();
 }
 
 }  // namespace ihv::app

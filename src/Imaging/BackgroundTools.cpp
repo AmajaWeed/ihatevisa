@@ -7,17 +7,34 @@
 
 namespace ihv::imaging::BackgroundTools {
 
+namespace {
+
+// QImage::pixel()/setPixel() go through per-call format dispatch and bounds
+// checking — for a flood fill that can touch a large fraction of a modern
+// multi-thousand-pixel camera photo (millions of calls), that overhead is
+// exactly what made the magic wand and "Удаление фона" visibly lag. Every
+// image here is already explicitly Format_ARGB32, so a flat array of raw
+// QRgb* scanline pointers gives O(1) direct access instead.
+std::vector<QRgb*> rowPointers(QImage& img) {
+    std::vector<QRgb*> rows(static_cast<size_t>(img.height()));
+    for (int y = 0; y < img.height(); ++y) rows[static_cast<size_t>(y)] = reinterpret_cast<QRgb*>(img.scanLine(y));
+    return rows;
+}
+
+}  // namespace
+
 QImage autoClean(const QImage& src, int threshold, const QColor& targetColor) {
     QImage img = src.convertToFormat(QImage::Format_ARGB32);
     int w = img.width(), h = img.height();
     if (w <= 0 || h <= 0) return img;
+    std::vector<QRgb*> rows = rowPointers(img);
 
     auto samplePatch = [&](int x0, int y0, int size) {
         double r = 0, g = 0, b = 0;
         int n = 0;
         for (int y = y0; y < y0 + size; ++y) {
             for (int x = x0; x < x0 + size; ++x) {
-                QRgb px = img.pixel(x, y);
+                QRgb px = rows[static_cast<size_t>(y)][x];
                 r += qRed(px);
                 g += qGreen(px);
                 b += qBlue(px);
@@ -71,7 +88,7 @@ QImage autoClean(const QImage& src, int threshold, const QColor& targetColor) {
         if (visited[vi]) continue;
         visited[vi] = 1;
 
-        QRgb px = img.pixel(x, y);
+        QRgb px = rows[static_cast<size_t>(y)][x];
         double dr = qRed(px) - bgR, dg = qGreen(px) - bgG, db = qBlue(px) - bgB;
         double dist = std::sqrt(dr * dr + dg * dg + db * db);
         if (dist >= th) continue;  // not background-colored: stop, don't propagate past it either
@@ -118,16 +135,16 @@ QImage autoClean(const QImage& src, int threshold, const QColor& targetColor) {
 
     // Pass 3: apply the eroded strength as the actual color blend.
     for (int y = 0; y < h; ++y) {
+        QRgb* row = rows[static_cast<size_t>(y)];
         for (int x = 0; x < w; ++x) {
             size_t vi = static_cast<size_t>(y) * w + x;
             float s = eroded[vi];
             if (s <= 0.0f) continue;
-            QRgb px = img.pixel(x, y);
+            QRgb px = row[x];
             int r = qRed(px) + static_cast<int>((targetColor.red() - qRed(px)) * s);
             int g = qGreen(px) + static_cast<int>((targetColor.green() - qGreen(px)) * s);
             int b = qBlue(px) + static_cast<int>((targetColor.blue() - qBlue(px)) * s);
-            img.setPixel(x, y,
-                         qRgba(std::clamp(r, 0, 255), std::clamp(g, 0, 255), std::clamp(b, 0, 255), qAlpha(px)));
+            row[x] = qRgba(std::clamp(r, 0, 255), std::clamp(g, 0, 255), std::clamp(b, 0, 255), qAlpha(px));
         }
     }
     return img;
@@ -137,8 +154,9 @@ QImage magicWandFill(const QImage& src, QPoint seed, int threshold) {
     QImage img = src.convertToFormat(QImage::Format_ARGB32);
     int w = img.width(), h = img.height();
     if (seed.x() < 0 || seed.y() < 0 || seed.x() >= w || seed.y() >= h) return img;
+    std::vector<QRgb*> rows = rowPointers(img);
 
-    QRgb target = img.pixel(seed);
+    QRgb target = rows[static_cast<size_t>(seed.y())][seed.x()];
     double tr = qRed(target), tg = qGreen(target), tb = qBlue(target);
     std::vector<unsigned char> visited(static_cast<size_t>(w) * h, 0);
     std::vector<QPoint> stack{seed};
@@ -153,7 +171,7 @@ QImage magicWandFill(const QImage& src, QPoint seed, int threshold) {
         if (visited[vi]) continue;
         visited[vi] = 1;
 
-        QRgb px = img.pixel(x, y);
+        QRgb px = rows[static_cast<size_t>(y)][x];
         double dr = qRed(px) - tr, dg = qGreen(px) - tg, db = qBlue(px) - tb;
         double dist = std::sqrt(dr * dr + dg * dg + db * db);
         if (dist >= threshold) continue;
@@ -162,7 +180,7 @@ QImage magicWandFill(const QImage& src, QPoint seed, int threshold) {
         // 255 at the threshold boundary, instead of a hard binary cut —
         // this alone removes most of the jaggy/hard edge.
         int alpha = threshold > 0 ? static_cast<int>(std::clamp(dist / threshold, 0.0, 1.0) * 255) : 0;
-        img.setPixel(x, y, qRgba(qRed(px), qGreen(px), qBlue(px), alpha));
+        rows[static_cast<size_t>(y)][x] = qRgba(qRed(px), qGreen(px), qBlue(px), alpha);
         minX = std::min(minX, x);
         minY = std::min(minY, y);
         maxX = std::max(maxX, x);
@@ -184,8 +202,9 @@ QImage magicWandFill(const QImage& src, QPoint seed, int threshold) {
         int bw = bx1 - bx0 + 1;
         for (int y = by0; y <= by1; ++y)
             for (int x = bx0; x <= bx1; ++x)
-                alphaCopy[static_cast<size_t>(y - by0) * bw + (x - bx0)] = qAlpha(img.pixel(x, y));
+                alphaCopy[static_cast<size_t>(y - by0) * bw + (x - bx0)] = qAlpha(rows[static_cast<size_t>(y)][x]);
         for (int y = by0; y <= by1; ++y) {
+            QRgb* row = rows[static_cast<size_t>(y)];
             for (int x = bx0; x <= bx1; ++x) {
                 int sum = 0, n = 0;
                 for (int dy = -kRadius; dy <= kRadius; ++dy) {
@@ -196,31 +215,34 @@ QImage magicWandFill(const QImage& src, QPoint seed, int threshold) {
                         ++n;
                     }
                 }
-                QRgb px = img.pixel(x, y);
-                img.setPixel(x, y, qRgba(qRed(px), qGreen(px), qBlue(px), n > 0 ? sum / n : qAlpha(px)));
+                QRgb px = row[x];
+                row[x] = qRgba(qRed(px), qGreen(px), qBlue(px), n > 0 ? sum / n : qAlpha(px));
             }
         }
     }
     return img;
 }
 
-void paintBrush(QImage& img, QPoint center, int radiusPx, int targetAlpha) {
+void paintBrush(QImage& img, QPoint center, int radiusPx, int targetAlpha, double opacity) {
     if (img.format() != QImage::Format_ARGB32) img = img.convertToFormat(QImage::Format_ARGB32);
     int w = img.width(), h = img.height();
     radiusPx = std::max(1, radiusPx);
+    opacity = std::clamp(opacity, 0.0, 1.0);
     int x0 = std::max(0, center.x() - radiusPx), x1 = std::min(w - 1, center.x() + radiusPx);
     int y0 = std::max(0, center.y() - radiusPx), y1 = std::min(h - 1, center.y() + radiusPx);
+    double inner = radiusPx * 0.6;
     for (int y = y0; y <= y1; ++y) {
+        QRgb* row = reinterpret_cast<QRgb*>(img.scanLine(y));
         for (int x = x0; x <= x1; ++x) {
             double dist = std::hypot(x - center.x(), y - center.y());
             if (dist > radiusPx) continue;
             // Feathered falloff: full strength within the inner 60% of the
             // radius, tapering smoothly to zero effect at the edge.
-            double inner = radiusPx * 0.6;
             double coverage = dist <= inner ? 1.0 : std::clamp(1.0 - (dist - inner) / (radiusPx - inner), 0.0, 1.0);
-            QRgb px = img.pixel(x, y);
+            coverage *= opacity;
+            QRgb px = row[x];
             int newAlpha = static_cast<int>(std::round(qAlpha(px) * (1 - coverage) + targetAlpha * coverage));
-            img.setPixel(x, y, qRgba(qRed(px), qGreen(px), qBlue(px), std::clamp(newAlpha, 0, 255)));
+            row[x] = qRgba(qRed(px), qGreen(px), qBlue(px), std::clamp(newAlpha, 0, 255));
         }
     }
 }

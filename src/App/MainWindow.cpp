@@ -2,6 +2,7 @@
 
 #include <QAction>
 #include <QCloseEvent>
+#include <QDateTime>
 #include <QDragEnterEvent>
 #include <QDropEvent>
 #include <QFile>
@@ -213,6 +214,11 @@ void MainWindow::buildUi() {
     editor_ = new EditorWidget(centerStack_);
     editor_->setState(&state_);
     editor_->onDragStart = [this] { pushUndo(); };
+    editor_->onDragEnd = [this] {
+        lastBrushRefreshMs_ = 0;  // force the deferred throttle below to fire
+        refresh();
+        refreshThumbs();
+    };
     editor_->onGuideChanged = [this] { refreshInfo(); };
     editor_->onWandClick = [this](QPoint p) { onWandClick(p); };
     editor_->onBrushPaint = [this](QPoint p, bool restore) { onBrushPaint(p, restore); };
@@ -490,6 +496,11 @@ QWidget* MainWindow::buildReadyPanel() {
     brushSizeSlider_ = makeSlider(5, 150, 40);
     brushRow->addWidget(brushSizeSlider_, 1);
     bl->addLayout(brushRow);
+    auto* brushOpacityRow = new QHBoxLayout();
+    brushOpacityRow->addWidget(new QLabel("Непрозрачность"));
+    brushOpacitySlider_ = makeSlider(5, 100, 100);
+    brushOpacityRow->addWidget(brushOpacitySlider_, 1);
+    bl->addLayout(brushOpacityRow);
 
     auto updateToolMode = [this] {
         using Tool = EditorWidget::ToolMode;
@@ -832,15 +843,28 @@ void MainWindow::syncRawSlidersToUi() {
 }
 
 void MainWindow::pushUndo() {
-    undoStack_.push_back(state_);
+    UndoEntry entry;
+    entry.state = state_;
+    entry.photoId = activePhotoId_;
+    if (auto ph = activePhoto()) entry.processed = ph->processed;
+    undoStack_.push_back(std::move(entry));
     static constexpr size_t kMaxUndo = 40;
     if (undoStack_.size() > kMaxUndo) undoStack_.erase(undoStack_.begin());
 }
 
 void MainWindow::undo() {
     if (undoStack_.empty()) return;
-    state_ = undoStack_.back();
+    UndoEntry entry = std::move(undoStack_.back());
     undoStack_.pop_back();
+    state_ = entry.state;
+    if (entry.photoId >= 0) {
+        for (auto& p : photos_) {
+            if (p->id == entry.photoId) {
+                p->processed = entry.processed;
+                break;
+            }
+        }
+    }
     syncFormatFieldsToUi();
     QSignalBlocker b6(bwCheck_), b7(ovalCheck_), b8(cornerCheck_);
     rotationValueLabel_->setText(QString::number(state_.guide.rotation, 'f', 1) + "°");
@@ -849,6 +873,7 @@ void MainWindow::undo() {
     ovalCheck_->setChecked(state_.ovalOverlay);
     cornerCheck_->setChecked(state_.cornerOverlay);
     refresh();
+    refreshThumbs();
 }
 
 void MainWindow::refresh() {
@@ -992,7 +1017,17 @@ void MainWindow::onBrushPaint(QPoint sourcePx, bool restore) {
     // — a fresh snapshot per dab would flood the stack with one entry per
     // mouse-move event.
     if (!ph->processed) ph->processed = ph->original;
-    imaging::BackgroundTools::paintBrush(*ph->processed, sourcePx, brushSizeSlider_->value(), restore ? 255 : 0);
+    double opacity = brushOpacitySlider_->value() / 100.0;
+    imaging::BackgroundTools::paintBrush(*ph->processed, sourcePx, brushSizeSlider_->value(), restore ? 255 : 0,
+                                          opacity);
+    // The pixel edit above is cheap, but refresh() re-runs the whole
+    // photo's tone/downscale pipeline, which isn't — throttle it to a
+    // bounded rate so a fast stroke stays responsive instead of visibly
+    // lagging behind the cursor. onDragEnd (wired in buildUi) always
+    // forces one final unthrottled refresh, so the last dab is never lost.
+    qint64 now = QDateTime::currentMSecsSinceEpoch();
+    if (now - lastBrushRefreshMs_ < 33) return;  // ~30fps cap
+    lastBrushRefreshMs_ = now;
     refresh();
 }
 
@@ -1052,6 +1087,10 @@ void MainWindow::keyPressEvent(QKeyEvent* e) {
         pushUndo();
         state_.guide.y -= step;
         refresh();
+    } else if (e->key() == Qt::Key_BracketLeft) {
+        brushSizeSlider_->setValue(std::max(brushSizeSlider_->minimum(), brushSizeSlider_->value() - 5));
+    } else if (e->key() == Qt::Key_BracketRight) {
+        brushSizeSlider_->setValue(std::min(brushSizeSlider_->maximum(), brushSizeSlider_->value() + 5));
     } else {
         QMainWindow::keyPressEvent(e);
     }

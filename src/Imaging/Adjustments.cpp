@@ -107,6 +107,30 @@ RgbBuf blur(const RgbBuf& src, int radius) {
 QImage apply(const QImage& src, const core::EditorState& s, int w, int h) {
     w = std::max(1, w);
     h = std::max(1, h);
+
+    // Dragging the guide dots (crop position/rotation) repaints on every
+    // mouse-move, but none of that touches the source pixels, the tone
+    // adjustments, or (in editing mode) the target size — yet this used to
+    // redo the full mipmap downscale from the source photo's *original*
+    // resolution from scratch on every single frame, which is genuinely
+    // expensive for a modern multi-thousand-pixel camera photo and was the
+    // actual cause of "перетаскивание овала сильно лагает". Cache the
+    // result and only recompute when something that actually changes the
+    // output does. QImage::cacheKey() changes whenever the pixel data
+    // changes (even via in-place reassignment of the same QImage object,
+    // e.g. after auto-clean/undo), so it's the right identity check here,
+    // not the QImage's own address.
+    static qint64 cacheSrcKey = 0;
+    static core::RawAdjustments cacheAdj{};
+    static bool cacheBw = false;
+    static int cacheW = -1, cacheH = -1;
+    static QImage cacheResult;
+    qint64 srcKey = src.cacheKey();
+    if (!cacheResult.isNull() && srcKey == cacheSrcKey && w == cacheW && h == cacheH &&
+        cacheBw == s.blackAndWhite && cacheAdj == s.adj) {
+        return cacheResult;
+    }
+
     QImage scaled = (src.width() > w || src.height() > h)
                          ? smoothDownscale(src, w, h).convertToFormat(QImage::Format_ARGB32)
                          : src.scaled(w, h, Qt::IgnoreAspectRatio, Qt::SmoothTransformation)
@@ -227,6 +251,13 @@ QImage apply(const QImage& src, const core::EditorState& s, int w, int h) {
             line[x] = qRgba(clampByte(r), clampByte(g), clampByte(b), origAlpha);
         }
     }
+
+    cacheSrcKey = srcKey;
+    cacheAdj = s.adj;
+    cacheBw = s.blackAndWhite;
+    cacheW = w;
+    cacheH = h;
+    cacheResult = scaled;
     return scaled;
 }
 

@@ -30,7 +30,11 @@ QImage magicWandFill(const QImage& src, QPoint seed, int threshold);
 // wand. `center`/`radiusPx` are in source-image pixel coordinates. The
 // brush itself is feathered (full strength at the center, fading to no
 // effect at the radius) so repeated dabs blend smoothly instead of
-// leaving a hard stamped edge.
-void paintBrush(QImage& img, QPoint center, int radiusPx, int targetAlpha);
+// leaving a hard stamped edge. `opacity` (0..1) scales how strongly a
+// single dab moves a pixel toward targetAlpha — at 1.0 the center of the
+// brush snaps straight there same as before; below that, even the center
+// only partially blends, so a slow stroke can build up gradually instead
+// of always fully restoring/erasing in one pass.
+void paintBrush(QImage& img, QPoint center, int radiusPx, int targetAlpha, double opacity = 1.0);
 
 }  // namespace ihv::imaging::BackgroundTools

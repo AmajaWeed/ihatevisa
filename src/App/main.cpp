@@ -1,5 +1,6 @@
 #include <QApplication>
 #include <QCoreApplication>
+#include <QElapsedTimer>
 #include <QFile>
 #include <QFileInfo>
 #include <QImageReader>
@@ -241,8 +242,30 @@ int runTestExport(const char* imagePath, const char* outDir) {
         if (!farReachesWhite || !boundaryProtected) return 1;
     }
 
-    doc.processed = imaging::BackgroundTools::autoClean(doc.original, 45);
-    std::printf("auto-clean produced processed image: %dx%d\n", doc.processed->width(), doc.processed->height());
+    {
+        QElapsedTimer t;
+        t.start();
+        doc.processed = imaging::BackgroundTools::autoClean(doc.original, 45);
+        std::printf("auto-clean produced processed image: %dx%d (%lld ms, %dx%d source)\n",
+                    doc.processed->width(), doc.processed->height(), static_cast<long long>(t.elapsed()),
+                    doc.original.width(), doc.original.height());
+    }
+    // Confirms the Adjustments::apply() cache actually works: dragging the
+    // guide dots re-renders on every mouse-move without changing the
+    // source, params, or (in editing mode) the target size — the second
+    // identical call should be dramatically faster than the first.
+    {
+        QElapsedTimer t;
+        t.start();
+        core::EditorRenderer::render(s, doc, 500, 642, core::EditorRenderer::Mode::Editing);
+        qint64 first = t.elapsed();
+        t.restart();
+        core::EditorRenderer::render(s, doc, 500, 642, core::EditorRenderer::Mode::Editing);
+        qint64 second = t.elapsed();
+        std::printf("adjustments cache: first render %lld ms, identical second render %lld ms (%s)\n",
+                    static_cast<long long>(first), static_cast<long long>(second),
+                    second < first ? "cache working" : "cache NOT helping");
+    }
 
     // Magic wand (feathered) + brush touch-up, on a small crop for a quick
     // visual check of the soft edge / brush blending.

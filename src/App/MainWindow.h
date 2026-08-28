@@ -12,6 +12,7 @@
 #include <QSpinBox>
 #include <QStackedWidget>
 #include <QTabBar>
+#include <optional>
 #include <vector>
 
 #include "App/EditorWidget.h"
@@ -79,8 +80,23 @@ private:
     std::vector<core::PhotoDocumentPtr> photos_;
     int activePhotoId_ = -1;
     int nextPhotoId_ = 1;
-    std::vector<core::EditorState> undoStack_;  // guide/color/overlay snapshots (not the photo list)
+    // guide/color/overlay snapshot plus, for the photo active at that point,
+    // its `processed` (background-removal/brush) image — undoing a brush
+    // stroke or wand click needs to restore the pixels, not just state_.
+    struct UndoEntry {
+        core::EditorState state;
+        int photoId = -1;
+        std::optional<QImage> processed;
+    };
+    std::vector<UndoEntry> undoStack_;
     int currentTab_ = 0;
+    // Brush painting mutates the pixel data every dab (cheap), but a full
+    // repaint re-runs the whole photo's tone/downscale pipeline (not cheap
+    // for a real camera photo) — throttling that to a bounded rate keeps a
+    // fast stroke responsive instead of visibly lagging behind the cursor.
+    // onDragEnd (EditorWidget) always forces one final unthrottled refresh
+    // so the last dab of a stroke is never left unrendered.
+    qint64 lastBrushRefreshMs_ = 0;
     QString projectPath_;  // empty = unsaved new project
     bool dirty_ = false;
 
@@ -118,6 +134,7 @@ private:
     QPushButton* restoreBrushBtn_ = nullptr;
     QPushButton* eraseBrushBtn_ = nullptr;
     QSlider* brushSizeSlider_ = nullptr;
+    QSlider* brushOpacitySlider_ = nullptr;
     // Temperature..Saturation, in the order added by buildReadyPanel — kept
     // in lockstep so syncRawSlidersToUi() can refresh all three from state_.
     std::vector<QSlider*> rawSliders_;

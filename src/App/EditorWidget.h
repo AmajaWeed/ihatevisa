@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QWidget>
+#include <algorithm>
 #include <functional>
 #include <optional>
 
@@ -35,10 +36,15 @@ public:
     void setWandMode(bool on) { setToolMode(on ? ToolMode::Wand : ToolMode::Guide); }
     bool wandMode() const { return tool_ == ToolMode::Wand; }
     void setBrushRadiusPx(int r) { brushRadiusPx_ = std::max(1, r); }
+    int brushRadiusPx() const { return brushRadiusPx_; }
 
     // Called before any drag mutates state, so the host can push an undo
     // snapshot first (mirrors pushUndo() at mousedown, lines 521/528/533).
     std::function<void()> onDragStart;
+    // Called once a drag ends (mouse release). Brush painting throttles its
+    // (expensive — full re-render of the whole photo) refresh during the
+    // drag itself, so this guarantees the very last dab is always visible.
+    std::function<void()> onDragEnd;
     // Called after guide.x/y/scale changes during a drag, so the host can
     // refresh other panels (mini preview, "70%"-style info label, etc).
     std::function<void()> onGuideChanged;

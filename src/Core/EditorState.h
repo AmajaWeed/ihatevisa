@@ -46,6 +46,8 @@ struct RawAdjustments {
     // Presence
     int vibrance = 0;    // saturation boost weighted toward less-saturated pixels
     int saturation = 0;  // uniform saturation
+
+    bool operator==(const RawAdjustments&) const = default;
 };
 
 // All editing state, ported 1:1 from the flat global variables in
