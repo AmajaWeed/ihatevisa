@@ -87,10 +87,14 @@ bool UpdateInstaller::extractStaging(const QString& zipPath, const QString& stag
         }
         QDir().mkpath(QFileInfo(outPath).absolutePath());
 
+        // zip_uint32_t (not mode_t — that's a POSIX type, undeclared on
+        // MSVC) holding the raw unix mode bits from the zip's external
+        // attributes; only interpreted as a real mode_t within the
+        // POSIX-only blocks below.
         zip_uint8_t opsys = 0;
         zip_uint32_t attrs = 0;
         zip_file_get_external_attributes(z, static_cast<zip_uint64_t>(i), 0, &opsys, &attrs);
-        mode_t mode = (opsys == ZIP_OPSYS_UNIX && attrs != 0) ? static_cast<mode_t>(attrs >> 16) : 0;
+        zip_uint32_t rawMode = (opsys == ZIP_OPSYS_UNIX) ? (attrs >> 16) : 0;
 
         zip_file_t* f = zip_fopen_index(z, static_cast<zip_uint64_t>(i), 0);
         if (!f) continue;
@@ -109,6 +113,7 @@ bool UpdateInstaller::extractStaging(const QString& zipPath, const QString& stag
         // fails with "modified or invalid version", and the binary is
         // effectively missing) instead of erroring loudly, so this has to
         // be checked before ever falling through to the plain-file path.
+        mode_t mode = static_cast<mode_t>(rawMode);
         if (mode != 0 && S_ISLNK(mode)) {
             QFile::remove(outPath);  // mkpath above may have raced a stray file/dir here
             ::symlink(buf.constData(), outPath.toUtf8().constData());
