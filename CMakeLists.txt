@@ -57,7 +57,7 @@ set(SOURCES
 add_executable(iHateVisa MACOSX_BUNDLE ${SOURCES})
 
 target_include_directories(iHateVisa PRIVATE src)
-target_compile_definitions(iHateVisa PRIVATE IHATEVISA_VERSION="1.3.3")
+target_compile_definitions(iHateVisa PRIVATE IHATEVISA_VERSION="1.3.4")
 
 target_link_libraries(iHateVisa PRIVATE
     Qt6::Widgets

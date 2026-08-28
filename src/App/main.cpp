@@ -211,6 +211,36 @@ int runTestExport(const char* imagePath, const char* outDir) {
         if (!matchesTarget) return 1;
     }
 
+    // A real photo's subject/background boundary is anti-aliased, not a
+    // hard color jump — the pixels right at that edge are partway toward
+    // the background color and pass the flood fill's own threshold test,
+    // so a naive fill paints a visible white fringe/halo tracing the
+    // subject's outline ("проблема с лицом": a face photo came out with a
+    // heavy white glow around the hairline and jaw). autoClean should
+    // leave the boundary layer alone (erosion pulls it back to 0 strength)
+    // while still fully whitening the flat background further in, not
+    // just partially the way a linear falloff left it visibly tinted
+    // ("фон фотографий не белый").
+    {
+        QImage synth(60, 60, QImage::Format_ARGB32);
+        synth.fill(qRgb(230, 230, 230));
+        QPainter p(&synth);
+        p.setPen(Qt::NoPen);
+        p.setBrush(QColor(100, 50, 30));  // subject: far outside any reasonable threshold
+        p.drawRect(20, 20, 20, 20);
+        p.end();
+        QImage cleaned = imaging::BackgroundTools::autoClean(synth, 45);
+        QRgb farBg = cleaned.pixel(10, 30);          // deep in flat background
+        QRgb boundaryBg = cleaned.pixel(19, 30);      // background pixel touching the subject
+        bool farReachesWhite = qRed(farBg) > 250;
+        bool boundaryProtected = qRed(boundaryBg) < 240;  // should stay close to its original 230, not haloed white
+        std::printf(
+            "auto-clean edge halo: far-background %s (r=%d), boundary-adjacent %s (r=%d, original 230)\n",
+            farReachesWhite ? "reaches white" : "BUG: still tinted", qRed(farBg),
+            boundaryProtected ? "protected from halo" : "BUG: haloed white", qRed(boundaryBg));
+        if (!farReachesWhite || !boundaryProtected) return 1;
+    }
+
     doc.processed = imaging::BackgroundTools::autoClean(doc.original, 45);
     std::printf("auto-clean produced processed image: %dx%d\n", doc.processed->width(), doc.processed->height());
 

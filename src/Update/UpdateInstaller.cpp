@@ -141,38 +141,66 @@ bool UpdateInstaller::launchApplier(const QString& stagingRoot, const QString& s
                                      QString* error) {
     QString log = updatesDir() + "/apply-update.log";
 #if defined(Q_OS_WIN)
-    QString scriptPath = updatesDir() + "/apply-update.ps1";
+    // Plain .bat + a 2-line VBScript launcher instead of PowerShell: a
+    // "-ExecutionPolicy Bypass -WindowStyle Hidden -File ...ps1" invocation
+    // is exactly the shape antivirus/EDR heuristics flag as a dropper
+    // pattern, and PowerShell's execution policy can be locked down by
+    // Group Policy in ways "Bypass" can't override — either can silently
+    // swallow the whole apply step, which looks from the outside like
+    // "downloaded everything but never moved or cleaned up the files".
+    // Batch has no execution-policy gate at all, and WScript.Shell.Run
+    // with window style 0 is the standard, long-established way to run a
+    // batch file with no visible window — cmd.exe itself has no hidden-
+    // window option when launched from a GUI app with no console.
+    QString batPath = updatesDir() + "/apply-update.bat";
+    QString vbsPath = updatesDir() + "/apply-update.vbs";
     QString exePath = targetDir + "/iHateVisa.exe";
     // In-place file swap: robocopy /MIR mirrors the staged files over the
     // install directory (overwrite changed, add new, remove files the new
     // version no longer ships) without ever moving/renaming the install
-    // directory itself. That directory-rename dance was the previous
+    // directory itself. That directory-rename dance was an earlier
     // approach and is exactly what could silently fail (a locked DLL, an
     // AV scan holding a handle, a stray Explorer window) — when it did,
     // the whole update was rolled back and the app just relaunched
-    // unchanged, which looks from the outside like "says downloaded but
-    // never actually updates". Copying files individually has no such
-    // all-or-nothing requirement.
+    // unchanged. Copying files individually has no such all-or-nothing
+    // requirement. GOTO-based branching throughout (no `if (...) else
+    // (...)` blocks) deliberately avoids a real hazard: a path containing
+    // a literal `)` — e.g. "C:\Program Files (x86)\..." — would prematurely
+    // close a parenthesized batch block if one were used here.
     QString script = QString(
-                          "$targetPid = %1\n"
-                          "Wait-Process -Id $targetPid -Timeout 120 -ErrorAction SilentlyContinue\n"
-                          "Start-Sleep -Milliseconds 500\n"
-                          "$log = \"%2\"\n"
-                          "$target = \"%3\"\n"
-                          "$staging = \"%4\"\n"
-                          "$stagingParent = \"%5\"\n"
-                          "$zip = \"%6\"\n"
-                          "\"$(Get-Date) starting apply (in-place file swap)\" | Out-File -Append $log\n"
-                          "robocopy \"$staging\" \"$target\" /MIR /R:5 /W:1 /NFL /NDL /NP *>> $log\n"
-                          "$rc = $LASTEXITCODE\n"
-                          "if ($rc -lt 8) {\n"
-                          "  \"$(Get-Date) applied ok (robocopy exit $rc)\" | Out-File -Append $log\n"
-                          "} else {\n"
-                          "  \"$(Get-Date) apply FAILED (robocopy exit $rc)\" | Out-File -Append $log\n"
-                          "}\n"
-                          "Remove-Item -Recurse -Force $stagingParent -ErrorAction SilentlyContinue\n"
-                          "Remove-Item -Force $zip -ErrorAction SilentlyContinue\n"
-                          "Start-Process \"%7\"\n")
+                          "@echo off\n"
+                          "set \"PID=%1\"\n"
+                          "set \"LOG=%2\"\n"
+                          "set \"TARGET=%3\"\n"
+                          "set \"STAGING=%4\"\n"
+                          "set \"STAGING_PARENT=%5\"\n"
+                          "set \"ZIP=%6\"\n"
+                          "set \"EXE=%7\"\n"
+                          "echo %DATE% %TIME% apply-update.bat started, waiting for pid %PID% >> \"%LOG%\"\n"
+                          "set /a COUNT=0\n"
+                          ":waitloop\n"
+                          "tasklist /FI \"PID eq %PID%\" 2>NUL | find /I \"%PID%\" >NUL\n"
+                          "if errorlevel 1 goto afterwait\n"
+                          "set /a COUNT+=1\n"
+                          "if %COUNT% GEQ 120 goto afterwait\n"
+                          "timeout /t 1 /nobreak >NUL\n"
+                          "goto waitloop\n"
+                          ":afterwait\n"
+                          "timeout /t 1 /nobreak >NUL\n"
+                          "echo %DATE% %TIME% starting apply (in-place file swap) >> \"%LOG%\"\n"
+                          "robocopy \"%STAGING%\" \"%TARGET%\" /MIR /R:5 /W:1 /NFL /NDL /NP >> \"%LOG%\" 2>&1\n"
+                          "set RC=%ERRORLEVEL%\n"
+                          "echo %DATE% %TIME% robocopy exit code %RC% >> \"%LOG%\"\n"
+                          "if %RC% GEQ 8 goto failed\n"
+                          "echo %DATE% %TIME% applied ok >> \"%LOG%\"\n"
+                          "goto cleanup\n"
+                          ":failed\n"
+                          "echo %DATE% %TIME% apply FAILED >> \"%LOG%\"\n"
+                          ":cleanup\n"
+                          "rmdir /S /Q \"%STAGING_PARENT%\" >> \"%LOG%\" 2>&1\n"
+                          "del /F /Q \"%ZIP%\" >> \"%LOG%\" 2>&1\n"
+                          "echo %DATE% %TIME% cleanup done, relaunching >> \"%LOG%\"\n"
+                          "start \"\" \"%EXE%\"\n")
                           .arg(waitPid)
                           .arg(log)
                           .arg(targetDir)
@@ -180,15 +208,25 @@ bool UpdateInstaller::launchApplier(const QString& stagingRoot, const QString& s
                           .arg(stagingParentDir)
                           .arg(zipPath)
                           .arg(exePath);
-    QFile f(scriptPath);
+    QFile f(batPath);
     if (!f.open(QIODevice::WriteOnly | QIODevice::Text)) {
-        if (error) *error = "could not write apply-update.ps1";
+        if (error) *error = "could not write apply-update.bat";
         return false;
     }
     f.write(script.toUtf8());
     f.close();
-    return QProcess::startDetached(
-        "powershell", {"-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-File", scriptPath});
+
+    QString vbs = QString("CreateObject(\"WScript.Shell\").Run \"\"\"%1\"\"\", 0, False\n").arg(batPath);
+    QFile vf(vbsPath);
+    if (!vf.open(QIODevice::WriteOnly | QIODevice::Text)) {
+        if (error) *error = "could not write apply-update.vbs";
+        return false;
+    }
+    vf.write(vbs.toUtf8());
+    vf.close();
+
+    appendLog(QString("launching wscript for %1 (batch %2)").arg(vbsPath, batPath));
+    return QProcess::startDetached("wscript.exe", {"//B", "//Nologo", vbsPath});
 #else
     QString scriptPath = updatesDir() + "/apply-update.sh";
     bool isAppBundle = targetDir.endsWith(".app", Qt::CaseInsensitive);

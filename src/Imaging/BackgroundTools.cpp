@@ -48,6 +48,7 @@ QImage autoClean(const QImage& src, int threshold, const QColor& targetColor) {
     // color is to the sampled corners.
     double th = threshold > 0 ? threshold : 45;
     std::vector<unsigned char> visited(static_cast<size_t>(w) * h, 0);
+    std::vector<float> strength(static_cast<size_t>(w) * h, 0.0f);
     std::vector<QPoint> stack;
     stack.reserve(2 * (w + h));
     for (int x = 0; x < w; ++x) {
@@ -59,6 +60,8 @@ QImage autoClean(const QImage& src, int threshold, const QColor& targetColor) {
         stack.emplace_back(w - 1, y);
     }
 
+    // Pass 1: flood fill, recording per-pixel strength (how background-like
+    // it is) without touching pixel colors yet.
     while (!stack.empty()) {
         QPoint p = stack.back();
         stack.pop_back();
@@ -73,16 +76,59 @@ QImage autoClean(const QImage& src, int threshold, const QColor& targetColor) {
         double dist = std::sqrt(dr * dr + dg * dg + db * db);
         if (dist >= th) continue;  // not background-colored: stop, don't propagate past it either
 
-        double strength = 1.0 - (dist / th);
-        int r = qRed(px) + static_cast<int>((targetColor.red() - qRed(px)) * strength);
-        int g = qGreen(px) + static_cast<int>((targetColor.green() - qGreen(px)) * strength);
-        int b = qBlue(px) + static_cast<int>((targetColor.blue() - qBlue(px)) * strength);
-        img.setPixel(x, y, qRgba(std::clamp(r, 0, 255), std::clamp(g, 0, 255), std::clamp(b, 0, 255), qAlpha(px)));
+        // A linear 1-dist/th ramp meant real (non-uniform, softly lit)
+        // backgrounds rarely reached full white, staying visibly tinted
+        // wherever they drifted from the corner-sampled average — plateau
+        // at full strength well before the threshold instead, so only
+        // pixels genuinely near the *edge* of what counts as background
+        // stay partial.
+        strength[vi] = static_cast<float>(std::clamp(1.0 - dist / (th * 0.6), 0.0, 1.0));
 
         stack.emplace_back(x + 1, y);
         stack.emplace_back(x - 1, y);
         stack.emplace_back(x, y + 1);
         stack.emplace_back(x, y - 1);
+    }
+
+    // Pass 2: erode the strength map by one pixel (min over the 4-neighborhood,
+    // treating anything not reached by the flood fill as strength 0). Real
+    // photos anti-alias the subject/background boundary — those blended
+    // pixels are genuinely partway toward the background color and pass
+    // the flood fill's own test, which otherwise paints a visible white
+    // fringe/halo tracing the subject's hair and face outline. Pulling the
+    // affected region back by a pixel keeps the flat background fully
+    // covered (its interior neighbors are unaffected by an erosion this
+    // small) while stopping short of the subject's real edge.
+    std::vector<float> eroded(strength.size());
+    for (int y = 0; y < h; ++y) {
+        for (int x = 0; x < w; ++x) {
+            size_t vi = static_cast<size_t>(y) * w + x;
+            if (!visited[vi] || strength[vi] <= 0.0f) {
+                eroded[vi] = 0.0f;
+                continue;
+            }
+            float m = strength[vi];
+            if (x > 0) m = std::min(m, strength[vi - 1]);
+            if (x + 1 < w) m = std::min(m, strength[vi + 1]);
+            if (y > 0) m = std::min(m, strength[vi - static_cast<size_t>(w)]);
+            if (y + 1 < h) m = std::min(m, strength[vi + static_cast<size_t>(w)]);
+            eroded[vi] = m;
+        }
+    }
+
+    // Pass 3: apply the eroded strength as the actual color blend.
+    for (int y = 0; y < h; ++y) {
+        for (int x = 0; x < w; ++x) {
+            size_t vi = static_cast<size_t>(y) * w + x;
+            float s = eroded[vi];
+            if (s <= 0.0f) continue;
+            QRgb px = img.pixel(x, y);
+            int r = qRed(px) + static_cast<int>((targetColor.red() - qRed(px)) * s);
+            int g = qGreen(px) + static_cast<int>((targetColor.green() - qGreen(px)) * s);
+            int b = qBlue(px) + static_cast<int>((targetColor.blue() - qBlue(px)) * s);
+            img.setPixel(x, y,
+                         qRgba(std::clamp(r, 0, 255), std::clamp(g, 0, 255), std::clamp(b, 0, 255), qAlpha(px)));
+        }
     }
     return img;
 }
