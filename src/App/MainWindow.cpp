@@ -9,6 +9,7 @@
 #include <QFileInfo>
 #include <QFrame>
 #include <QGroupBox>
+#include <QGridLayout>
 #include <QHBoxLayout>
 #include <QIcon>
 #include <QImageReader>
@@ -163,7 +164,9 @@ void MainWindow::buildUi() {
     rootLayout->setContentsMargins(0, 0, 0, 0);
     rootLayout->setSpacing(0);
 
-    // Top bar
+    // Top bar — logo/status on the left, tabs shifted to the right of the
+    // same row (freed up by removing the duplicate add-photo button that
+    // used to sit there) instead of their own row underneath.
     auto* topBar = new QWidget(central);
     topBar->setFixedHeight(44);
     auto* topLayout = new QHBoxLayout(topBar);
@@ -171,20 +174,9 @@ void MainWindow::buildUi() {
     logo->setStyleSheet("font-weight:800;");
     topInfo_ = new QLabel("Загрузите фотографию", topBar);
     topInfo_->setStyleSheet("color:#888;");
-    auto* importBtn = new QPushButton("＋ Добавить фото", topBar);
-    connect(importBtn, &QPushButton::clicked, this, [this] {
-        QStringList paths = QFileDialog::getOpenFileNames(
-            this, "Импорт фото", QString(),
-            "Изображения (*.png *.jpg *.jpeg *.heic *.heif *.webp *.bmp *.tif *.tiff);;Все файлы (*)");
-        if (!paths.isEmpty()) importFiles(paths);
-    });
     topLayout->addWidget(logo);
     topLayout->addWidget(topInfo_, 1);
-    topLayout->addWidget(importBtn);
-    rootLayout->addWidget(topBar);
 
-    // Tab bar — plain left-aligned flat tabs directly under the top bar,
-    // matching the reference screenshot's layout (no icons, no stretch).
     tabBar_ = new QTabBar(central);
     tabBar_->setExpanding(false);
     tabBar_->setShape(QTabBar::RoundedNorth);
@@ -192,12 +184,8 @@ void MainWindow::buildUi() {
     tabBar_->addTab("Готовая фотография");
     tabBar_->addTab("Печать");
     connect(tabBar_, &QTabBar::currentChanged, this, &MainWindow::switchTab);
-    auto* tabBarRow = new QHBoxLayout();
-    tabBarRow->setContentsMargins(0, 0, 0, 0);
-    tabBarRow->setSpacing(0);
-    tabBarRow->addWidget(tabBar_);
-    tabBarRow->addStretch();
-    rootLayout->addLayout(tabBarRow);
+    topLayout->addWidget(tabBar_);
+    rootLayout->addWidget(topBar);
 
     // Body: thumbs | center | side panel
     auto* body = new QWidget(central);
@@ -261,7 +249,9 @@ QWidget* MainWindow::buildThumbStrip(QBoxLayout* parentLayout) {
     parentLayout->addWidget(thumbList_, 1);
     auto* addBtn = new QPushButton("＋ Фото");
     connect(addBtn, &QPushButton::clicked, this, [this] {
-        QStringList paths = QFileDialog::getOpenFileNames(this, "Импорт фото");
+        QStringList paths = QFileDialog::getOpenFileNames(
+            this, "Импорт фото", QString(),
+            "Изображения (*.png *.jpg *.jpeg *.heic *.heif *.webp *.bmp *.tif *.tiff);;Все файлы (*)");
         if (!paths.isEmpty()) importFiles(paths);
     });
     parentLayout->addWidget(addBtn);
@@ -286,21 +276,32 @@ QWidget* MainWindow::buildSizesPanel() {
 
     auto* paramBox = new QGroupBox("Параметры формата");
     auto* pl = new QVBoxLayout(paramBox);
-    auto addRow = [&](const QString& label, QDoubleSpinBox*& spin, double lo, double hi, double step) {
-        auto* row = new QHBoxLayout();
-        row->addWidget(new QLabel(label));
+    // Compact 2-column grid (label stacked above a small spinbox in each
+    // cell) instead of one full-width label+spinbox per row — matches the
+    // reference layout, and halves the vertical space this section needs.
+    auto* grid = new QGridLayout();
+    grid->setHorizontalSpacing(10);
+    grid->setVerticalSpacing(2);
+    auto addCell = [&](int row, int col, const QString& label, QDoubleSpinBox*& spin, double lo, double hi,
+                        double step) {
+        auto* cell = new QVBoxLayout();
+        cell->setSpacing(1);
+        auto* lbl = new QLabel(label);
+        lbl->setStyleSheet("color:#999; font-size:11px;");
+        cell->addWidget(lbl);
         spin = new QDoubleSpinBox();
         spin->setRange(lo, hi);
         spin->setSingleStep(step);
-        row->addWidget(spin);
-        pl->addLayout(row);
+        cell->addWidget(spin);
+        grid->addLayout(cell, row, col);
     };
-    addRow("Ширина (мм)", widthSpin_, 10, 100, 1);
-    addRow("Высота (мм)", heightSpin_, 10, 100, 1);
-    addRow("Верх. поле (мм)", topMarginSpin_, 0, 30, 0.5);
-    addRow("Нижн. поле (мм)", botMarginSpin_, 0, 60, 0.5);
-    addRow("% лица на фото", headPctSpin_, 30, 95, 0.5);
-    addRow("Голова (мм)", headSizeSpin_, 5, 95, 0.5);
+    addCell(0, 0, "Ширина (мм)", widthSpin_, 10, 100, 1);
+    addCell(0, 1, "Верх. поле (мм)", topMarginSpin_, 0, 30, 0.5);
+    addCell(1, 0, "Высота (мм)", heightSpin_, 10, 100, 1);
+    addCell(1, 1, "Нижн. поле (мм)", botMarginSpin_, 0, 60, 0.5);
+    addCell(2, 0, "% лица на фото", headPctSpin_, 30, 95, 0.5);
+    addCell(2, 1, "Голова (мм)", headSizeSpin_, 5, 95, 0.5);
+    pl->addLayout(grid);
     connect(widthSpin_, &QDoubleSpinBox::valueChanged, this, [this](double v) {
         state_.widthMm = v;
         onWidthOrHeightChange(state_);
