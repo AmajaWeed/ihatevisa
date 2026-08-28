@@ -7,7 +7,7 @@
 
 namespace ihv::imaging::BackgroundTools {
 
-QImage autoClean(const QImage& src, int threshold) {
+QImage autoClean(const QImage& src, int threshold, const QColor& targetColor) {
     QImage img = src.convertToFormat(QImage::Format_ARGB32);
     int w = img.width(), h = img.height();
     if (w <= 0 || h <= 0) return img;
@@ -74,9 +74,9 @@ QImage autoClean(const QImage& src, int threshold) {
         if (dist >= th) continue;  // not background-colored: stop, don't propagate past it either
 
         double strength = 1.0 - (dist / th);
-        int r = qRed(px) + static_cast<int>((255 - qRed(px)) * strength);
-        int g = qGreen(px) + static_cast<int>((255 - qGreen(px)) * strength);
-        int b = qBlue(px) + static_cast<int>((255 - qBlue(px)) * strength);
+        int r = qRed(px) + static_cast<int>((targetColor.red() - qRed(px)) * strength);
+        int g = qGreen(px) + static_cast<int>((targetColor.green() - qGreen(px)) * strength);
+        int b = qBlue(px) + static_cast<int>((targetColor.blue() - qBlue(px)) * strength);
         img.setPixel(x, y, qRgba(std::clamp(r, 0, 255), std::clamp(g, 0, 255), std::clamp(b, 0, 255), qAlpha(px)));
 
         stack.emplace_back(x + 1, y);

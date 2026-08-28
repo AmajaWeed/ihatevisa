@@ -1,14 +1,19 @@
 #pragma once
 
+#include <QColor>
 #include <QImage>
 #include <QPoint>
 
 namespace ihv::imaging::BackgroundTools {
 
 // Samples the 4 photo corners for a background reference color and
-// progressively whitens pixels within `threshold` distance of it. Ported
-// from autoCleanBackground() (line 390). Returns a new ARGB32 image.
-QImage autoClean(const QImage& src, int threshold);
+// progressively blends pixels within `threshold` distance of it toward
+// `targetColor` (the document's selected background color — the oval
+// vignette and corner overlay masks fill with this same color, so this
+// must match or a visible seam appears where they meet unprocessed
+// pixels). Ported from autoCleanBackground() (line 390). Returns a new
+// ARGB32 image.
+QImage autoClean(const QImage& src, int threshold, const QColor& targetColor = Qt::white);
 
 // Stack-based flood fill from `seed` (in source-image pixel coordinates),
 // setting alpha=0 on the connected region whose color is within

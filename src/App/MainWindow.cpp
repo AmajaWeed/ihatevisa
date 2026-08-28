@@ -10,6 +10,7 @@
 #include <QFrame>
 #include <QGroupBox>
 #include <QGridLayout>
+#include <QGuiApplication>
 #include <QHBoxLayout>
 #include <QIcon>
 #include <QImageReader>
@@ -23,10 +24,12 @@
 #include <QPainter>
 #include <QPrintDialog>
 #include <QPrinter>
+#include <QScreen>
 #include <QScrollArea>
 #include <QSignalBlocker>
 #include <QWheelEvent>
 #include <QVBoxLayout>
+#include <algorithm>
 #include <cmath>
 
 #include "Core/EditorRenderer.h"
@@ -93,7 +96,15 @@ core::PhotoDocumentPtr MainWindow::activePhoto() const {
 
 void MainWindow::buildUi() {
     setWindowTitle("iHateVisa");
-    resize(1300, 860);
+    // A hardcoded 1300x860 default overflowed the window on screens
+    // narrower than that (e.g. 1280px-wide laptops) — the fixed-width side
+    // panels can't shrink to compensate, so the rightmost column of
+    // controls just got clipped at the window edge. Size against the
+    // actual screen instead, capped so it still looks intentional on large
+    // monitors.
+    QSize avail = QGuiApplication::primaryScreen() ? QGuiApplication::primaryScreen()->availableSize()
+                                                     : QSize(1300, 860);
+    resize(std::min(1300, avail.width() - 40), std::min(860, avail.height() - 80));
     setAcceptDrops(true);
 
     auto* fileMenu = menuBar()->addMenu("Файл");
@@ -226,7 +237,10 @@ void MainWindow::buildUi() {
     };
 
     sidePanels_ = new QStackedWidget(body);
-    sidePanels_->setFixedWidth(300);
+    // 300px clipped the right column of the 2-up "Параметры формата" grid
+    // at its own edge (worse on Windows, whose native spinbox chrome is
+    // wider than macOS's) — 340 gives both columns room with margin.
+    sidePanels_->setFixedWidth(340);
     sidePanels_->addWidget(wrapScroll(buildSizesPanel()));
     sidePanels_->addWidget(wrapScroll(buildReadyPanel()));
     sidePanels_->addWidget(wrapScroll(buildPrintPanel()));
@@ -292,14 +306,21 @@ QWidget* MainWindow::buildSizesPanel() {
         spin = new QDoubleSpinBox();
         spin->setRange(lo, hi);
         spin->setSingleStep(step);
+        // A label longer than the spinbox (e.g. "Верх. поле (мм)") was
+        // forcing the grid column wider than the sidebar has room for,
+        // which visually clipped the spinbox at the panel's edge instead
+        // of just wrapping/truncating the label. Capping the spinbox width
+        // is harmless (it's a 2-6 digit number either way); the labels
+        // below were also shortened so they don't force it either.
+        spin->setMaximumWidth(110);
         cell->addWidget(spin);
         grid->addLayout(cell, row, col);
     };
-    addCell(0, 0, "Ширина (мм)", widthSpin_, 10, 100, 1);
-    addCell(0, 1, "Верх. поле (мм)", topMarginSpin_, 0, 30, 0.5);
-    addCell(1, 0, "Высота (мм)", heightSpin_, 10, 100, 1);
-    addCell(1, 1, "Нижн. поле (мм)", botMarginSpin_, 0, 60, 0.5);
-    addCell(2, 0, "% лица на фото", headPctSpin_, 30, 95, 0.5);
+    addCell(0, 0, "Ширина", widthSpin_, 10, 100, 1);
+    addCell(0, 1, "Верх. поле", topMarginSpin_, 0, 30, 0.5);
+    addCell(1, 0, "Высота", heightSpin_, 10, 100, 1);
+    addCell(1, 1, "Нижн. поле", botMarginSpin_, 0, 60, 0.5);
+    addCell(2, 0, "% лица", headPctSpin_, 30, 95, 0.5);
     addCell(2, 1, "Голова (мм)", headSizeSpin_, 5, 95, 0.5);
     pl->addLayout(grid);
     connect(widthSpin_, &QDoubleSpinBox::valueChanged, this, [this](double v) {
@@ -948,7 +969,8 @@ void MainWindow::autoCleanBackground() {
     auto ph = activePhoto();
     if (!ph) return;
     pushUndo();
-    ph->processed = imaging::BackgroundTools::autoClean(ph->displayImage(), acThresholdSlider_->value());
+    ph->processed = imaging::BackgroundTools::autoClean(ph->displayImage(), acThresholdSlider_->value(),
+                                                          QColor(QString::fromStdString(state_.bgColorHex)));
     refresh();
     refreshThumbs();
 }

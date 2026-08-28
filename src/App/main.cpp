@@ -190,6 +190,27 @@ int runTestExport(const char* imagePath, const char* outDir) {
         if (!centerUntouched || !borderWhitened) return 1;
     }
 
+    // auto-clean must blend toward the document's *selected* background
+    // color, not a hardcoded white — otherwise, wherever the oval-vignette
+    // or corner-overlay mask (which correctly use the selected color) meet
+    // auto-cleaned pixels outside the mask, a visible seam appears at
+    // exactly that boundary (this is what "виньетка забагалась" turned out
+    // to be: a light-blue background selection, auto-cleaned toward white
+    // instead of blue).
+    {
+        QImage synth(60, 60, QImage::Format_ARGB32);
+        synth.fill(qRgb(204, 229, 255));  // uniform background matching a "light blue" swatch
+        QColor targetBlue(0xcc, 0xe5, 0xff);
+        QImage cleaned = imaging::BackgroundTools::autoClean(synth, 45, targetBlue);
+        QRgb center = cleaned.pixel(30, 30);
+        bool matchesTarget = qRed(center) == targetBlue.red() && qGreen(center) == targetBlue.green() &&
+                              qBlue(center) == targetBlue.blue();
+        std::printf("auto-clean targets selected bg color: %s (got rgb=%d,%d,%d, expected %d,%d,%d)\n",
+                    matchesTarget ? "OK" : "BUG: still whitening toward hardcoded white", qRed(center),
+                    qGreen(center), qBlue(center), targetBlue.red(), targetBlue.green(), targetBlue.blue());
+        if (!matchesTarget) return 1;
+    }
+
     doc.processed = imaging::BackgroundTools::autoClean(doc.original, 45);
     std::printf("auto-clean produced processed image: %dx%d\n", doc.processed->width(), doc.processed->height());
 
