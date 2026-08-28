@@ -65,6 +65,7 @@ QImage magicWandFill(const QImage& src, QPoint seed, int threshold) {
     double tr = qRed(target), tg = qGreen(target), tb = qBlue(target);
     std::vector<unsigned char> visited(static_cast<size_t>(w) * h, 0);
     std::vector<QPoint> stack{seed};
+    int minX = w, minY = h, maxX = -1, maxY = -1;
 
     while (!stack.empty()) {
         QPoint p = stack.back();
@@ -77,15 +78,74 @@ QImage magicWandFill(const QImage& src, QPoint seed, int threshold) {
 
         QRgb px = img.pixel(x, y);
         double dr = qRed(px) - tr, dg = qGreen(px) - tg, db = qBlue(px) - tb;
-        if (std::sqrt(dr * dr + dg * dg + db * db) >= threshold) continue;
+        double dist = std::sqrt(dr * dr + dg * dg + db * db);
+        if (dist >= threshold) continue;
 
-        img.setPixel(x, y, qRgba(qRed(px), qGreen(px), qBlue(px), 0));
+        // Soft cutout: alpha ramps from 0 (exact target-color match) up to
+        // 255 at the threshold boundary, instead of a hard binary cut —
+        // this alone removes most of the jaggy/hard edge.
+        int alpha = threshold > 0 ? static_cast<int>(std::clamp(dist / threshold, 0.0, 1.0) * 255) : 0;
+        img.setPixel(x, y, qRgba(qRed(px), qGreen(px), qBlue(px), alpha));
+        minX = std::min(minX, x);
+        minY = std::min(minY, y);
+        maxX = std::max(maxX, x);
+        maxY = std::max(maxY, y);
         stack.emplace_back(x + 1, y);
         stack.emplace_back(x - 1, y);
         stack.emplace_back(x, y + 1);
         stack.emplace_back(x, y - 1);
     }
+
+    // Feather the selection edge geometrically too: a small box blur of
+    // just the alpha channel over the affected region smooths the
+    // staircase edge the flood fill itself produces.
+    if (maxX >= minX) {
+        constexpr int kRadius = 2;
+        int bx0 = std::max(0, minX - kRadius), by0 = std::max(0, minY - kRadius);
+        int bx1 = std::min(w - 1, maxX + kRadius), by1 = std::min(h - 1, maxY + kRadius);
+        std::vector<unsigned char> alphaCopy(static_cast<size_t>(bx1 - bx0 + 1) * (by1 - by0 + 1));
+        int bw = bx1 - bx0 + 1;
+        for (int y = by0; y <= by1; ++y)
+            for (int x = bx0; x <= bx1; ++x)
+                alphaCopy[static_cast<size_t>(y - by0) * bw + (x - bx0)] = qAlpha(img.pixel(x, y));
+        for (int y = by0; y <= by1; ++y) {
+            for (int x = bx0; x <= bx1; ++x) {
+                int sum = 0, n = 0;
+                for (int dy = -kRadius; dy <= kRadius; ++dy) {
+                    for (int dx = -kRadius; dx <= kRadius; ++dx) {
+                        int sx = x + dx, sy = y + dy;
+                        if (sx < bx0 || sx > bx1 || sy < by0 || sy > by1) continue;
+                        sum += alphaCopy[static_cast<size_t>(sy - by0) * bw + (sx - bx0)];
+                        ++n;
+                    }
+                }
+                QRgb px = img.pixel(x, y);
+                img.setPixel(x, y, qRgba(qRed(px), qGreen(px), qBlue(px), n > 0 ? sum / n : qAlpha(px)));
+            }
+        }
+    }
     return img;
+}
+
+void paintBrush(QImage& img, QPoint center, int radiusPx, int targetAlpha) {
+    if (img.format() != QImage::Format_ARGB32) img = img.convertToFormat(QImage::Format_ARGB32);
+    int w = img.width(), h = img.height();
+    radiusPx = std::max(1, radiusPx);
+    int x0 = std::max(0, center.x() - radiusPx), x1 = std::min(w - 1, center.x() + radiusPx);
+    int y0 = std::max(0, center.y() - radiusPx), y1 = std::min(h - 1, center.y() + radiusPx);
+    for (int y = y0; y <= y1; ++y) {
+        for (int x = x0; x <= x1; ++x) {
+            double dist = std::hypot(x - center.x(), y - center.y());
+            if (dist > radiusPx) continue;
+            // Feathered falloff: full strength within the inner 60% of the
+            // radius, tapering smoothly to zero effect at the edge.
+            double inner = radiusPx * 0.6;
+            double coverage = dist <= inner ? 1.0 : std::clamp(1.0 - (dist - inner) / (radiusPx - inner), 0.0, 1.0);
+            QRgb px = img.pixel(x, y);
+            int newAlpha = static_cast<int>(std::round(qAlpha(px) * (1 - coverage) + targetAlpha * coverage));
+            img.setPixel(x, y, qRgba(qRed(px), qGreen(px), qBlue(px), std::clamp(newAlpha, 0, 255)));
+        }
+    }
 }
 
 }  // namespace ihv::imaging::BackgroundTools

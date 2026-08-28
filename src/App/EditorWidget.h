@@ -22,11 +22,19 @@ class EditorWidget : public QWidget {
 public:
     explicit EditorWidget(QWidget* parent = nullptr);
 
+    enum class ToolMode { Guide, Wand, BrushRestore, BrushErase };
+
     void setMode(core::EditorRenderer::Mode mode) { mode_ = mode; update(); }
     void setPhoto(core::PhotoDocumentPtr photo) { photo_ = std::move(photo); update(); }
     void setState(core::EditorState* state) { state_ = state; update(); }
-    void setWandMode(bool on) { wandMode_ = on; setCursor(on ? Qt::CrossCursor : Qt::ArrowCursor); }
-    bool wandMode() const { return wandMode_; }
+    void setToolMode(ToolMode m) {
+        tool_ = m;
+        setCursor(m == ToolMode::Guide ? Qt::ArrowCursor : Qt::CrossCursor);
+    }
+    ToolMode toolMode() const { return tool_; }
+    void setWandMode(bool on) { setToolMode(on ? ToolMode::Wand : ToolMode::Guide); }
+    bool wandMode() const { return tool_ == ToolMode::Wand; }
+    void setBrushRadiusPx(int r) { brushRadiusPx_ = std::max(1, r); }
 
     // Called before any drag mutates state, so the host can push an undo
     // snapshot first (mirrors pushUndo() at mousedown, lines 521/528/533).
@@ -37,6 +45,10 @@ public:
     // Called on a wand-mode click, with the *source-image* pixel coordinate
     // already resolved through the inverse guide transform.
     std::function<void(QPoint)> onWandClick;
+    // Called continuously while dragging in a brush mode, with the
+    // source-image pixel coordinate and whether this is a restore
+    // (true) or erase (false) stroke.
+    std::function<void(QPoint, bool)> onBrushPaint;
 
     QSize lastCanvasSize() const { return canvasSize_; }
 
@@ -54,10 +66,11 @@ private:
     core::EditorRenderer::Mode mode_ = core::EditorRenderer::Mode::Editing;
     core::PhotoDocumentPtr photo_;
     core::EditorState* state_ = nullptr;
-    bool wandMode_ = false;
+    ToolMode tool_ = ToolMode::Guide;
+    int brushRadiusPx_ = 40;
     QSize canvasSize_;
 
-    enum class DragType { None, GuideMove, GuideDotTop, GuideDotBot };
+    enum class DragType { None, GuideMove, GuideDotTop, GuideDotBot, Brush };
     DragType drag_ = DragType::None;
     QPoint dragStartMouse_;
     double dragStartGuideX_ = 0, dragStartGuideY_ = 0;

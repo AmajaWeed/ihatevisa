@@ -36,11 +36,28 @@ QImage buildSheet(const EditorState& s, const PhotoDocument& doc) {
     sheet.fill(Qt::white);
     QPainter p(&sheet);
     int bw = mmToPx(0.3, dpi);
+
+    // Anchor the grid at the margin by default (matches the old
+    // behavior), or center the whole used block within the sheet if
+    // requested — leftover space split evenly instead of all pushed to
+    // the bottom-right. Either way, printOffsetXMm/Ymm lets the user nudge
+    // the whole block afterwards, e.g. to dodge a printer's streaking band
+    // that always falls in the same spot on the page.
+    int usedW = cols * photo.width() + (cols - 1) * gPx;
+    int usedH = rows * photo.height() + (rows - 1) * gPx;
+    int baseX = mgPx, baseY = mgPx;
+    if (s.printCenter) {
+        baseX = std::max(mgPx, (ppW - usedW) / 2);
+        baseY = std::max(mgPx, (ppH - usedH) / 2);
+    }
+    baseX += mmToPx(s.printOffsetXMm, dpi);
+    baseY += mmToPx(s.printOffsetYMm, dpi);
+
     int placed = 0;
     for (int r = 0; r < rows && placed < layout.count; ++r) {
         for (int c = 0; c < cols && placed < layout.count; ++c) {
-            int px = mgPx + c * (photo.width() + gPx);
-            int py = mgPx + r * (photo.height() + gPx);
+            int px = baseX + c * (photo.width() + gPx);
+            int py = baseY + r * (photo.height() + gPx);
             if (s.printBorder) {
                 p.fillRect(QRect(px - bw, py - bw, photo.width() + 2 * bw, photo.height() + 2 * bw), Qt::black);
             }

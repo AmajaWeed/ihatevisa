@@ -103,13 +103,20 @@ void EditorWidget::mousePressEvent(QMouseEvent* e) {
     QPoint origin((width() - canvasSize_.width()) / 2, (height() - canvasSize_.height()) / 2);
     QPoint local = e->pos() - origin;
 
-    if (wandMode_ && mode_ == Mode::Preview) {
+    if (tool_ == ToolMode::Wand && mode_ == Mode::Preview) {
         QPoint src = mapToSourcePixel(e->pos());
         if (src.x() >= 0 && onWandClick) onWandClick(src);
         return;
     }
+    if ((tool_ == ToolMode::BrushRestore || tool_ == ToolMode::BrushErase) && mode_ == Mode::Preview) {
+        if (onDragStart) onDragStart();
+        drag_ = DragType::Brush;
+        QPoint src = mapToSourcePixel(e->pos());
+        if (src.x() >= 0 && onBrushPaint) onBrushPaint(src, tool_ == ToolMode::BrushRestore);
+        return;
+    }
 
-    if (mode_ == Mode::Editing) {
+    if (mode_ == Mode::Editing && tool_ == ToolMode::Guide) {
         core::EditorRenderer::GuideDots dots;
         if (core::EditorRenderer::computeGuideDots(*state_, canvasSize_.width(), canvasSize_.height(), dots)) {
             double dTop = std::hypot(local.x() - dots.top.x(), local.y() - dots.top.y());
@@ -134,8 +141,15 @@ void EditorWidget::mousePressEvent(QMouseEvent* e) {
 
 void EditorWidget::mouseMoveEvent(QMouseEvent* e) {
     if (!state_ || drag_ == DragType::None) return;
-    double pxMm = canvasSize_.width() / state_->widthMm;
 
+    if (drag_ == DragType::Brush) {
+        QPoint src = mapToSourcePixel(e->pos());
+        if (src.x() >= 0 && onBrushPaint) onBrushPaint(src, tool_ == ToolMode::BrushRestore);
+        update();
+        return;
+    }
+
+    double pxMm = canvasSize_.width() / state_->widthMm;
     if (drag_ == DragType::GuideMove) {
         state_->guide.x = dragStartGuideX_ + (e->pos().x() - dragStartMouse_.x()) / pxMm;
         state_->guide.y = dragStartGuideY_ + (e->pos().y() - dragStartMouse_.y()) / pxMm;
@@ -152,7 +166,7 @@ void EditorWidget::mouseMoveEvent(QMouseEvent* e) {
 
 void EditorWidget::mouseReleaseEvent(QMouseEvent*) {
     drag_ = DragType::None;
-    setCursor(wandMode_ ? Qt::CrossCursor : Qt::ArrowCursor);
+    setCursor(tool_ == ToolMode::Guide ? Qt::ArrowCursor : Qt::CrossCursor);
 }
 
 }  // namespace ihv::app

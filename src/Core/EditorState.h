@@ -9,15 +9,17 @@
 namespace ihv::core {
 
 // Position/scale/rotation of the photo relative to the format guide.
-// Ported from the `guide` global (line 322). Rotation is deliberately not
-// derivable from dot-dragging (see solveGuideFromDots in EditorRenderer) —
-// it's driven only by the rotation slider.
+// Ported from the `guide` global (line 322). Rotation is derived from
+// dragging the crown/chin dots off the vertical (see
+// EditorRenderer::solveGuideFromDots) rather than a separate slider.
 struct Guide {
     double x = 0;
     double y = 0;
     double scale = 1;
     double rotation = 0;
 };
+
+enum class CornerPosition { TopLeft, TopRight, BottomLeft, BottomRight };
 
 // Cyan/Magenta/Yellow shift for one luminance zone, -50..50. Ported from
 // ccData (line 324).
@@ -58,6 +60,7 @@ struct EditorState {
     bool blackAndWhite = false;
     bool ovalOverlay = false;
     bool cornerOverlay = false;
+    CornerPosition cornerPosition = CornerPosition::BottomRight;
 
     // Print composer (line 253-262).
     int printDpi = 300;
@@ -65,6 +68,9 @@ struct EditorState {
     double printGapMm = 2;
     int printPhotoCount = 6;  // 2/4/6/8
     bool printBorder = false;
+    bool printCenter = true;   // distribute leftover sheet space symmetrically instead of anchoring top-left
+    double printOffsetXMm = 0; // manual nudge on top of centering, e.g. to dodge a printer's streaking band
+    double printOffsetYMm = 0;
 };
 
 namespace EditorEngine {

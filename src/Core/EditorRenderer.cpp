@@ -35,12 +35,16 @@ void paintOvalMask(QPainter& p, const QRectF& rect, const QColor& bg) {
     p.restore();
 }
 
-void paintCornerMask(QPainter& p, double w, double h, double pxMm, const QColor& color) {
+void paintCornerMask(QPainter& p, double w, double h, double pxMm, const QColor& color, CornerPosition pos) {
     double cs = 12 * pxMm;
+    double cx = (pos == CornerPosition::TopLeft || pos == CornerPosition::BottomLeft) ? 0 : w;
+    double cy = (pos == CornerPosition::TopLeft || pos == CornerPosition::TopRight) ? 0 : h;
+    double sx = cx == 0 ? cs : -cs;
+    double sy = cy == 0 ? cs : -cs;
     QPainterPath path;
-    path.moveTo(w, h);
-    path.lineTo(w - cs, h);
-    path.lineTo(w, h - cs);
+    path.moveTo(cx, cy);
+    path.lineTo(cx + sx, cy);
+    path.lineTo(cx, cy + sy);
     path.closeSubpath();
     p.save();
     p.setPen(Qt::NoPen);
@@ -151,7 +155,7 @@ QImage render(const EditorState& s, const PhotoDocument& doc, int canvasW, int c
     if (s.cornerOverlay) {
         QPainter p(&canvas);
         QColor c = preview ? bgColor(s) : QColor(200, 200, 200, 128);
-        paintCornerMask(p, dw, dh, pxMm, c);
+        paintCornerMask(p, dw, dh, pxMm, c, s.cornerPosition);
     }
 
     return canvas;
@@ -184,9 +188,17 @@ bool computeGuideDots(const EditorState& s, int canvasW, int canvasH, GuideDots&
 
 void solveGuideFromDots(EditorState& s, int canvasW, const QPointF& topPx, const QPointF& botPx) {
     double pxMm = canvasW / s.widthMm;
-    double dist = std::abs(botPx.y() - topPx.y());
+    double dx = botPx.x() - topPx.x();
+    double dy = botPx.y() - topPx.y();
+    double dist = std::hypot(dx, dy);
     double baseDist = s.headSizeMm * pxMm;
     s.guide.scale = std::clamp(baseDist != 0 ? dist / baseDist : 1.0, 0.3, 3.0);
+    // Rotation is now derived from the dot-drag itself (dragging the dots
+    // off the vertical implies a tilt) instead of a separate slider — the
+    // midpoint/scale math below is unaffected by rotation either way (the
+    // rotation happens around the midpoint itself, so it cancels out of
+    // the average). Locked-vertical mode ignores any horizontal deviation.
+    if (!s.lockVertical) s.guide.rotation = std::atan2(-dx, dy) * 180.0 / M_PI;
     double mx = (topPx.x() + botPx.x()) / 2, my = (topPx.y() + botPx.y()) / 2;
     s.guide.x = (mx - canvasW / 2.0) / pxMm;
     s.guide.y = (my - (s.topMarginMm + s.headSizeMm / 2) * s.guide.scale * pxMm) / pxMm;

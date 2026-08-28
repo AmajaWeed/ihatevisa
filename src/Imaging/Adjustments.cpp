@@ -9,13 +9,36 @@ namespace {
 
 inline unsigned char clampByte(double v) { return static_cast<unsigned char>(std::clamp(v, 0.0, 255.0)); }
 
+// QImage::scaled(..., SmoothTransformation) is a single bilinear pass — for
+// a large reduction ratio (a multi-thousand-pixel photo down to a few
+// hundred px, easily >10x for modern phone cameras) that just sparsely
+// samples the source instead of averaging it, aliasing high-frequency
+// detail (skin texture, fabric weave) into visible noise. The standard fix
+// is a mipmap-style chain: repeatedly halve (each halving is a true
+// area-average at that ratio) until within 2x of the target, then one
+// final precise scale. Halving preserves the full-resolution source for
+// the very first step, so this is exact box-filtering down to the last
+// step, not a single undersampled jump.
+QImage smoothDownscale(const QImage& src, int targetW, int targetH) {
+    QImage cur = src;
+    while (cur.width() > targetW * 2 && cur.height() > targetH * 2) {
+        cur = cur.scaled(std::max(targetW, cur.width() / 2), std::max(targetH, cur.height() / 2),
+                          Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
+    }
+    if (cur.width() != targetW || cur.height() != targetH)
+        cur = cur.scaled(targetW, targetH, Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
+    return cur;
+}
+
 }  // namespace
 
 QImage apply(const QImage& src, const core::EditorState& s, int w, int h) {
     w = std::max(1, w);
     h = std::max(1, h);
-    QImage scaled = src.scaled(w, h, Qt::IgnoreAspectRatio, Qt::SmoothTransformation)
-                         .convertToFormat(QImage::Format_ARGB32);
+    QImage scaled = (src.width() > w || src.height() > h)
+                         ? smoothDownscale(src, w, h).convertToFormat(QImage::Format_ARGB32)
+                         : src.scaled(w, h, Qt::IgnoreAspectRatio, Qt::SmoothTransformation)
+                               .convertToFormat(QImage::Format_ARGB32);
 
     double brightMul = (100.0 + s.brightness) / 100.0;
     double contrastMul = (100.0 + s.contrast) / 100.0;

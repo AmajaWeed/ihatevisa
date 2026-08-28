@@ -43,6 +43,7 @@ int runTestExport(const char* imagePath, const char* outDir) {
     doc.id = 1;
     doc.name = "test";
     doc.original = img.convertToFormat(QImage::Format_ARGB32);
+    QString dirQ = QString::fromUtf8(outDir);
 
     core::EditorState s;
     core::EditorEngine::applyFormat(s, "passport_rf");
@@ -62,11 +63,53 @@ int runTestExport(const char* imagePath, const char* outDir) {
     core::EditorRenderer::solveGuideFromDots(s, canvasW, top2, bot2);
     std::printf("guide after solve: scale=%.3f x=%.2f y=%.2f\n", s.guide.scale, s.guide.x, s.guide.y);
 
+    // Rotation-via-dots: drag the bottom dot sideways too (tilt) and
+    // confirm the derived angle matches atan2 of the offset, and that
+    // lockVertical suppresses it.
+    {
+        core::EditorState rs;
+        core::EditorEngine::applyFormat(rs, "passport_rf");
+        rs.lockVertical = false;
+        core::EditorRenderer::GuideDots d0;
+        core::EditorRenderer::computeGuideDots(rs, canvasW, canvasH, d0);
+        QPointF tiltedBot(d0.bot.x() + 20, d0.bot.y());  // pure horizontal shift of the chin dot
+        core::EditorRenderer::solveGuideFromDots(rs, canvasW, d0.top, tiltedBot);
+        std::printf("rotation-via-dots: angle=%.2f deg (expect small nonzero)\n", rs.guide.rotation);
+        bool rotOk = std::abs(rs.guide.rotation) > 0.5;
+
+        core::EditorState locked;
+        core::EditorEngine::applyFormat(locked, "passport_rf");
+        locked.lockVertical = true;
+        core::EditorRenderer::GuideDots dl;
+        core::EditorRenderer::computeGuideDots(locked, canvasW, canvasH, dl);
+        core::EditorRenderer::solveGuideFromDots(locked, canvasW, dl.top, QPointF(dl.bot.x() + 20, dl.bot.y()));
+        bool lockOk = locked.guide.rotation == 0;
+        std::printf("lockVertical suppresses rotation: %s\n", lockOk ? "OK" : "FAIL");
+        if (!rotOk || !lockOk) return 1;
+    }
+
+    // Corner position: confirm changing it actually changes the rendered
+    // pixels (mask moves to a different corner).
+    {
+        core::EditorState cs1, cs2;
+        core::EditorEngine::applyFormat(cs1, "passport_rf");
+        core::EditorEngine::applyFormat(cs2, "passport_rf");
+        cs1.cornerOverlay = cs2.cornerOverlay = true;
+        cs1.cornerPosition = core::CornerPosition::TopLeft;
+        cs2.cornerPosition = core::CornerPosition::BottomRight;
+        QImage c1 = core::EditorRenderer::render(cs1, doc, 200, 257, core::EditorRenderer::Mode::Preview);
+        QImage c2 = core::EditorRenderer::render(cs2, doc, 200, 257, core::EditorRenderer::Mode::Preview);
+        c1.save(dirQ + "/corner_topleft.png");
+        c2.save(dirQ + "/corner_bottomright.png");
+        bool cornerOk = c1 != c2;
+        std::printf("corner position changes render: %s\n", cornerOk ? "OK" : "FAIL");
+        if (!cornerOk) return 1;
+    }
+
     QImage editing = core::EditorRenderer::render(s, doc, canvasW, canvasH, core::EditorRenderer::Mode::Editing);
     QImage preview = core::EditorRenderer::render(s, doc, canvasW, canvasH, core::EditorRenderer::Mode::Preview);
     std::printf("editing render: %dx%d, preview render: %dx%d\n", editing.width(), editing.height(),
                 preview.width(), preview.height());
-    QString dirQ = QString::fromUtf8(outDir);
     editing.save(dirQ + "/editing_mode.png");
     preview.save(dirQ + "/preview_mode.png");
 
@@ -80,7 +123,18 @@ int runTestExport(const char* imagePath, const char* outDir) {
     doc.processed = imaging::BackgroundTools::autoClean(doc.original, 45);
     std::printf("auto-clean produced processed image: %dx%d\n", doc.processed->width(), doc.processed->height());
 
-    QString dir = QString::fromUtf8(outDir);
+    // Magic wand (feathered) + brush touch-up, on a small crop for a quick
+    // visual check of the soft edge / brush blending.
+    {
+        QImage crop = doc.original.copy(0, 0, std::min(400, doc.original.width()), std::min(400, doc.original.height()));
+        QImage wanded = imaging::BackgroundTools::magicWandFill(crop, QPoint(2, 2), 60);
+        imaging::BackgroundTools::paintBrush(wanded, QPoint(350, 350), 60, 0);   // erase dab
+        imaging::BackgroundTools::paintBrush(wanded, QPoint(50, 350), 30, 255);  // restore dab
+        wanded.save(dirQ + "/wand_and_brush.png");
+        std::printf("wrote wand_and_brush.png\n");
+    }
+
+    const QString& dir = dirQ;
     QImage final = core::EditorRenderer::renderFinal(s, doc, s.dpi);
     final.setDotsPerMeterX(static_cast<int>(std::round(s.dpi / 0.0254)));
     final.setDotsPerMeterY(static_cast<int>(std::round(s.dpi / 0.0254)));

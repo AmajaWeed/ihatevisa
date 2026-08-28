@@ -192,6 +192,7 @@ void MainWindow::buildUi() {
     editor_->onDragStart = [this] { pushUndo(); };
     editor_->onGuideChanged = [this] { refreshInfo(); };
     editor_->onWandClick = [this](QPoint p) { onWandClick(p); };
+    editor_->onBrushPaint = [this](QPoint p, bool restore) { onBrushPaint(p, restore); };
     printPreview_ = new QLabel(centerStack_);
     printPreview_->setAlignment(Qt::AlignCenter);
     centerStack_->addWidget(editor_);
@@ -303,29 +304,21 @@ QWidget* MainWindow::buildSizesPanel() {
     lockVerticalCheck_->setChecked(true);
     connect(lockVerticalCheck_, &QCheckBox::toggled, this, [this](bool locked) {
         state_.lockVertical = locked;
-        rotationSlider_->setEnabled(!locked);
         if (locked) {
             state_.guide.rotation = 0;
-            QSignalBlocker b(rotationSlider_);
-            rotationSlider_->setValue(0);
             rotationValueLabel_->setText("0°");
         }
         refresh();
     });
     pl->addWidget(lockVerticalCheck_);
 
+    // No rotation slider — drag the crown/chin dots off the vertical to
+    // tilt (see EditorRenderer::solveGuideFromDots). This just reflects
+    // the current angle.
     auto* rotRow = new QHBoxLayout();
-    rotRow->addWidget(new QLabel("Поворот"));
-    rotationSlider_ = makeSlider(-150, 150, 0);
-    rotationSlider_->setEnabled(false);
-    connect(rotationSlider_, &QSlider::valueChanged, this, [this](int v) {
-        state_.guide.rotation = v / 10.0;
-        rotationValueLabel_->setText(QString::number(state_.guide.rotation, 'f', 1) + "°");
-        refresh();
-    });
-    rotRow->addWidget(rotationSlider_, 1);
+    rotRow->addWidget(new QLabel("Угол наклона"));
     rotationValueLabel_ = new QLabel("0°");
-    rotRow->addWidget(rotationValueLabel_);
+    rotRow->addWidget(rotationValueLabel_, 1, Qt::AlignRight);
     pl->addLayout(rotRow);
     layout->addWidget(paramBox);
 
@@ -343,6 +336,28 @@ QWidget* MainWindow::buildSizesPanel() {
     });
     ol->addWidget(ovalCheck_);
     ol->addWidget(cornerCheck_);
+
+    auto* cornerPosRow = new QHBoxLayout();
+    struct CornerBtn {
+        core::CornerPosition pos;
+        QString label;
+    };
+    for (const auto& cb : {CornerBtn{core::CornerPosition::TopLeft, "↖"}, CornerBtn{core::CornerPosition::TopRight, "↗"},
+                            CornerBtn{core::CornerPosition::BottomLeft, "↙"},
+                            CornerBtn{core::CornerPosition::BottomRight, "↘"}}) {
+        auto* b = new QPushButton(cb.label);
+        b->setCheckable(true);
+        b->setFixedWidth(32);
+        b->setChecked(cb.pos == state_.cornerPosition);
+        connect(b, &QPushButton::clicked, this, [this, pos = cb.pos, b] {
+            state_.cornerPosition = pos;
+            for (auto* btn : cornerPosButtons_) btn->setChecked(btn == b);
+            refresh();
+        });
+        cornerPosButtons_.push_back(b);
+        cornerPosRow->addWidget(b);
+    }
+    ol->addLayout(cornerPosRow);
     layout->addWidget(overlayBox);
 
     auto* actionsBox = new QGroupBox("Действия");
@@ -380,13 +395,59 @@ QWidget* MainWindow::buildReadyPanel() {
 
     wandBtn_ = new QPushButton("🪄 Волшебная палочка");
     wandBtn_->setCheckable(true);
-    connect(wandBtn_, &QPushButton::toggled, this, [this](bool on) { editor_->setWandMode(on); });
     bl->addWidget(wandBtn_);
     auto* mwRow = new QHBoxLayout();
     mwRow->addWidget(new QLabel("Порог"));
     mwThresholdSlider_ = makeSlider(5, 80, 25);
     mwRow->addWidget(mwThresholdSlider_, 1);
     bl->addLayout(mwRow);
+
+    // Touch-up brushes: paint restore/erase alpha directly, with a soft
+    // (feathered) edge — for cleaning up after auto-clean/magic wand
+    // without having to redo the whole selection.
+    restoreBrushBtn_ = new QPushButton("🖌 Восстановить кистью");
+    restoreBrushBtn_->setCheckable(true);
+    bl->addWidget(restoreBrushBtn_);
+    eraseBrushBtn_ = new QPushButton("🧽 Стереть кистью");
+    eraseBrushBtn_->setCheckable(true);
+    bl->addWidget(eraseBrushBtn_);
+    auto* brushRow = new QHBoxLayout();
+    brushRow->addWidget(new QLabel("Размер"));
+    brushSizeSlider_ = makeSlider(5, 150, 40);
+    brushRow->addWidget(brushSizeSlider_, 1);
+    bl->addLayout(brushRow);
+
+    auto updateToolMode = [this] {
+        using Tool = EditorWidget::ToolMode;
+        Tool t = wandBtn_->isChecked()          ? Tool::Wand
+                 : restoreBrushBtn_->isChecked() ? Tool::BrushRestore
+                 : eraseBrushBtn_->isChecked()   ? Tool::BrushErase
+                                                  : Tool::Guide;
+        editor_->setToolMode(t);
+    };
+    connect(wandBtn_, &QPushButton::toggled, this, [this, updateToolMode](bool on) {
+        if (on) {
+            restoreBrushBtn_->setChecked(false);
+            eraseBrushBtn_->setChecked(false);
+        }
+        updateToolMode();
+    });
+    connect(restoreBrushBtn_, &QPushButton::toggled, this, [this, updateToolMode](bool on) {
+        if (on) {
+            wandBtn_->setChecked(false);
+            eraseBrushBtn_->setChecked(false);
+        }
+        updateToolMode();
+    });
+    connect(eraseBrushBtn_, &QPushButton::toggled, this, [this, updateToolMode](bool on) {
+        if (on) {
+            wandBtn_->setChecked(false);
+            restoreBrushBtn_->setChecked(false);
+        }
+        updateToolMode();
+    });
+    connect(brushSizeSlider_, &QSlider::valueChanged, this, [this](int v) { editor_->setBrushRadiusPx(v); });
+
     auto* undoWandBtn = new QPushButton("↺ Восстановить фон");
     connect(undoWandBtn, &QPushButton::clicked, this, &MainWindow::undoWand);
     bl->addWidget(undoWandBtn);
@@ -578,6 +639,40 @@ QWidget* MainWindow::buildPrintPanel() {
     });
     layout->addWidget(paramBox);
 
+    // Printer streaking/banding compensation: center the whole grid on the
+    // sheet by default (rather than anchored top-left), plus a manual
+    // offset since a specific printer's streak position doesn't move.
+    auto* posBox = new QGroupBox("Положение на листе");
+    auto* posLayout = new QVBoxLayout(posBox);
+    printCenterCheck_ = new QCheckBox("Центрировать на листе");
+    printCenterCheck_->setChecked(true);
+    connect(printCenterCheck_, &QCheckBox::toggled, this, [this](bool v) {
+        state_.printCenter = v;
+        updatePrintLayoutInfo();
+    });
+    posLayout->addWidget(printCenterCheck_);
+    auto* offXRow = new QHBoxLayout();
+    offXRow->addWidget(new QLabel("Сдвиг X (мм)"));
+    printOffsetXSpin_ = new QDoubleSpinBox();
+    printOffsetXSpin_->setRange(-50, 50);
+    offXRow->addWidget(printOffsetXSpin_);
+    posLayout->addLayout(offXRow);
+    auto* offYRow = new QHBoxLayout();
+    offYRow->addWidget(new QLabel("Сдвиг Y (мм)"));
+    printOffsetYSpin_ = new QDoubleSpinBox();
+    printOffsetYSpin_->setRange(-50, 50);
+    offYRow->addWidget(printOffsetYSpin_);
+    posLayout->addLayout(offYRow);
+    connect(printOffsetXSpin_, &QDoubleSpinBox::valueChanged, this, [this](double v) {
+        state_.printOffsetXMm = v;
+        updatePrintLayoutInfo();
+    });
+    connect(printOffsetYSpin_, &QDoubleSpinBox::valueChanged, this, [this](double v) {
+        state_.printOffsetYMm = v;
+        updatePrintLayoutInfo();
+    });
+    layout->addWidget(posBox);
+
     layout->addStretch();
     return panel;
 }
@@ -593,7 +688,17 @@ void MainWindow::switchTab(int index) {
     } else {
         centerStack_->setCurrentWidget(editor_);
         editor_->setMode(index == 0 ? core::EditorRenderer::Mode::Editing : core::EditorRenderer::Mode::Preview);
-        editor_->setWandMode(index == 1 && wandBtn_->isChecked());
+        using Tool = EditorWidget::ToolMode;
+        Tool t = Tool::Guide;
+        if (index == 1) {
+            if (wandBtn_->isChecked())
+                t = Tool::Wand;
+            else if (restoreBrushBtn_->isChecked())
+                t = Tool::BrushRestore;
+            else if (eraseBrushBtn_->isChecked())
+                t = Tool::BrushErase;
+        }
+        editor_->setToolMode(t);
         editor_->update();
     }
 }
@@ -666,9 +771,8 @@ void MainWindow::undo() {
     state_ = undoStack_.back();
     undoStack_.pop_back();
     syncFormatFieldsToUi();
-    QSignalBlocker b1(rotationSlider_), b2(brightSlider_), b3(contrastSlider_), b4(gammaSlider_), b5(satSlider_),
-        b6(bwCheck_), b7(ovalCheck_), b8(cornerCheck_);
-    rotationSlider_->setValue(static_cast<int>(std::round(state_.guide.rotation * 10)));
+    QSignalBlocker b2(brightSlider_), b3(contrastSlider_), b4(gammaSlider_), b5(satSlider_), b6(bwCheck_),
+        b7(ovalCheck_), b8(cornerCheck_);
     rotationValueLabel_->setText(QString::number(state_.guide.rotation, 'f', 1) + "°");
     brightSlider_->setValue(state_.brightness);
     contrastSlider_->setValue(state_.contrast);
@@ -704,19 +808,11 @@ void MainWindow::refreshThumbs() {
 }
 
 void MainWindow::refreshInfo() {
+    rotationValueLabel_->setText(QString::number(state_.guide.rotation, 'f', 1) + "°");
+    // Top bar just shows transient status (saved/exported/etc, set directly
+    // by those actions) rather than a permanent filename/px/dpi dump.
     auto ph = activePhoto();
-    if (!ph) {
-        topInfo_->setText("Загрузите фотографию");
-        return;
-    }
-    topInfo_->setText(QString("%1 · %2x%3px · %4x%5мм · %6 dpi масштаб %7%")
-                           .arg(ph->name)
-                           .arg(ph->original.width())
-                           .arg(ph->original.height())
-                           .arg(state_.widthMm)
-                           .arg(state_.heightMm)
-                           .arg(state_.dpi)
-                           .arg(static_cast<int>(std::round(state_.guide.scale * 100))));
+    if (!ph) topInfo_->setText("Загрузите фотографию");
 }
 
 void MainWindow::exportPhoto() {
@@ -819,6 +915,17 @@ void MainWindow::onWandClick(QPoint sourcePx) {
     ph->processed = imaging::BackgroundTools::magicWandFill(ph->displayImage(), sourcePx, threshold);
     refresh();
     refreshThumbs();
+}
+
+void MainWindow::onBrushPaint(QPoint sourcePx, bool restore) {
+    auto ph = activePhoto();
+    if (!ph) return;
+    // Undo was already pushed once at drag-start (EditorWidget::onDragStart)
+    // — a fresh snapshot per dab would flood the stack with one entry per
+    // mouse-move event.
+    if (!ph->processed) ph->processed = ph->original;
+    imaging::BackgroundTools::paintBrush(*ph->processed, sourcePx, brushSizeSlider_->value(), restore ? 255 : 0);
+    refresh();
 }
 
 void MainWindow::undoWand() {
@@ -955,7 +1062,7 @@ void MainWindow::openProject(const QString& path) {
     editor_->setPhoto(activePhoto());
     syncFormatFieldsToUi();
     QSignalBlocker b1(ovalCheck_), b2(cornerCheck_), b3(bwCheck_), b4(brightSlider_), b5(contrastSlider_),
-        b6(gammaSlider_), b7(satSlider_), b8(lockVerticalCheck_), b9(rotationSlider_);
+        b6(gammaSlider_), b7(satSlider_), b8(lockVerticalCheck_);
     ovalCheck_->setChecked(state_.ovalOverlay);
     cornerCheck_->setChecked(state_.cornerOverlay);
     bwCheck_->setChecked(state_.blackAndWhite);
@@ -964,8 +1071,6 @@ void MainWindow::openProject(const QString& path) {
     gammaSlider_->setValue(state_.gammaPercent);
     satSlider_->setValue(state_.saturationPercent);
     lockVerticalCheck_->setChecked(state_.lockVertical);
-    rotationSlider_->setEnabled(!state_.lockVertical);
-    rotationSlider_->setValue(static_cast<int>(std::round(state_.guide.rotation * 10)));
     rotationValueLabel_->setText(QString::number(state_.guide.rotation, 'f', 1) + "°");
     refresh();
     refreshThumbs();

@@ -58,6 +58,7 @@ private:
     void printSheet();
     void autoCleanBackground();
     void onWandClick(QPoint sourcePx);
+    void onBrushPaint(QPoint sourcePx, bool restore);
     void undoWand();
     void updatePrintLayoutInfo();
 
@@ -101,16 +102,19 @@ private:
     QDoubleSpinBox* headPctSpin_ = nullptr;
     QDoubleSpinBox* headSizeSpin_ = nullptr;
     QCheckBox* lockVerticalCheck_ = nullptr;
-    QSlider* rotationSlider_ = nullptr;
     QLabel* rotationValueLabel_ = nullptr;
     QCheckBox* ovalCheck_ = nullptr;
     QCheckBox* cornerCheck_ = nullptr;
+    std::vector<QPushButton*> cornerPosButtons_;
     QCheckBox* bwCheck_ = nullptr;
 
     // Ready panel
     QSlider* acThresholdSlider_ = nullptr;
     QSlider* mwThresholdSlider_ = nullptr;
     QPushButton* wandBtn_ = nullptr;
+    QPushButton* restoreBrushBtn_ = nullptr;
+    QPushButton* eraseBrushBtn_ = nullptr;
+    QSlider* brushSizeSlider_ = nullptr;
     QSlider* brightSlider_ = nullptr;
     QSlider* contrastSlider_ = nullptr;
     QSlider* gammaSlider_ = nullptr;
@@ -124,6 +128,9 @@ private:
     QDoubleSpinBox* printMarginSpin_ = nullptr;
     QDoubleSpinBox* printGapSpin_ = nullptr;
     QCheckBox* printBorderCheck_ = nullptr;
+    QCheckBox* printCenterCheck_ = nullptr;
+    QDoubleSpinBox* printOffsetXSpin_ = nullptr;
+    QDoubleSpinBox* printOffsetYSpin_ = nullptr;
     QLabel* printLayoutInfo_ = nullptr;
     std::vector<QPushButton*> countButtons_;
 };

@@ -20,4 +20,12 @@ QImage autoClean(const QImage& src, int threshold);
 // unchanged.
 QImage magicWandFill(const QImage& src, QPoint seed, int threshold);
 
+// Paints a soft-edged circular brush of alpha `targetAlpha` (0 = erase,
+// 255 = restore) into `img` in place, for touch-up after auto-clean/magic
+// wand. `center`/`radiusPx` are in source-image pixel coordinates. The
+// brush itself is feathered (full strength at the center, fading to no
+// effect at the radius) so repeated dabs blend smoothly instead of
+// leaving a hard stamped edge.
+void paintBrush(QImage& img, QPoint center, int radiusPx, int targetAlpha);
+
 }  // namespace ihv::imaging::BackgroundTools
