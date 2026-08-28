@@ -2,6 +2,9 @@
 
 #include <sys/stat.h>
 #include <zip.h>
+#if !defined(Q_OS_WIN)
+#include <unistd.h>
+#endif
 
 #include <QCoreApplication>
 #include <QCryptographicHash>
@@ -84,6 +87,11 @@ bool UpdateInstaller::extractStaging(const QString& zipPath, const QString& stag
         }
         QDir().mkpath(QFileInfo(outPath).absolutePath());
 
+        zip_uint8_t opsys = 0;
+        zip_uint32_t attrs = 0;
+        zip_file_get_external_attributes(z, static_cast<zip_uint64_t>(i), 0, &opsys, &attrs);
+        mode_t mode = (opsys == ZIP_OPSYS_UNIX && attrs != 0) ? static_cast<mode_t>(attrs >> 16) : 0;
+
         zip_file_t* f = zip_fopen_index(z, static_cast<zip_uint64_t>(i), 0);
         if (!f) continue;
         zip_stat_t st;
@@ -91,6 +99,22 @@ bool UpdateInstaller::extractStaging(const QString& zipPath, const QString& stag
         QByteArray buf(static_cast<int>(st.size), Qt::Uninitialized);
         zip_fread(f, buf.data(), st.size);
         zip_fclose(f);
+
+#if !defined(Q_OS_WIN)
+        // .app bundles (in particular Qt's *.framework directories) rely
+        // on real symlinks for their Versions/Current structure — a zip
+        // entry with the S_IFLNK bit set stores the link *target path* as
+        // its "file content", not actual file data. Writing that out as a
+        // regular file silently corrupts the framework (codesign then
+        // fails with "modified or invalid version", and the binary is
+        // effectively missing) instead of erroring loudly, so this has to
+        // be checked before ever falling through to the plain-file path.
+        if (mode != 0 && S_ISLNK(mode)) {
+            QFile::remove(outPath);  // mkpath above may have raced a stray file/dir here
+            ::symlink(buf.constData(), outPath.toUtf8().constData());
+            continue;
+        }
+#endif
 
         QFile out(outPath);
         if (!out.open(QIODevice::WriteOnly)) continue;
@@ -100,13 +124,7 @@ bool UpdateInstaller::extractStaging(const QString& zipPath, const QString& stag
 #if !defined(Q_OS_WIN)
         // Preserve unix permissions (in particular the executable bit on
         // the bundle's main binary) from the zip's external attributes.
-        zip_uint8_t opsys = 0;
-        zip_uint32_t attrs = 0;
-        zip_file_get_external_attributes(z, static_cast<zip_uint64_t>(i), 0, &opsys, &attrs);
-        if (opsys == ZIP_OPSYS_UNIX && attrs != 0) {
-            mode_t mode = static_cast<mode_t>(attrs >> 16);
-            if (mode != 0) ::chmod(outPath.toUtf8().constData(), mode);
-        }
+        if (mode != 0) ::chmod(outPath.toUtf8().constData(), mode);
 #endif
     }
     zip_close(z);
@@ -285,13 +303,27 @@ void UpdateInstaller::prepareAndApply(const UpdateInfo& info, std::function<void
             return;
         }
 
-        // If the zip has exactly one top-level entry, that's the real
-        // root (macOS .app bundle case); otherwise the whole staging dir
-        // is the root (flat Windows publish).
+        // The real root is a top-level *.app bundle if the zip has one —
+        // found by extension, not just "exactly one entry", because
+        // ditto's --sequesterRsrc (used when packaging the release) adds a
+        // __MACOSX sidecar folder alongside the bundle, so a naive
+        // single-entry check misses it and drags that metadata folder
+        // along as if it were part of the app. Otherwise (no .app found)
+        // the whole staging dir is the root (flat Windows publish).
         QDir sd(stagingDir);
         QStringList topEntries = sd.entryList(QDir::AllEntries | QDir::NoDotAndDotDot);
         QString stagingRoot = stagingDir;
-        if (topEntries.size() == 1) stagingRoot = stagingDir + "/" + topEntries.first();
+        QString appEntry;
+        for (const QString& e : topEntries) {
+            if (e.endsWith(".app", Qt::CaseInsensitive)) {
+                appEntry = e;
+                break;
+            }
+        }
+        if (!appEntry.isEmpty())
+            stagingRoot = stagingDir + "/" + appEntry;
+        else if (topEntries.size() == 1)
+            stagingRoot = stagingDir + "/" + topEntries.first();
 
         QString targetDir = targetDirectory();
         qint64 pid = QCoreApplication::applicationPid();

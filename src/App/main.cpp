@@ -205,6 +205,46 @@ int runTestExport(const char* imagePath, const char* outDir) {
     return 0;
 }
 
+// Headless self-update: check -> print notes -> download/verify/stage/apply
+// -> exit (the apply script has already been launched detached by the time
+// onReadyToExit fires, exactly like the real toast flow). Matches
+// iHateCards.NET's own --update-now diagnostic mode. ignoreSkipped=true so
+// a previously-skipped version doesn't silently hide the check.
+int runUpdateNow() {
+    using namespace ihv;
+    QCoreApplication::setOrganizationName("iHateVisa");
+    QCoreApplication::setApplicationName("iHateVisa");
+    int argc = 0;
+    QCoreApplication app(argc, nullptr);
+
+    update::UpdateChecker checker;
+    checker.checkAsync(
+        [&](std::optional<update::UpdateInfo> info) {
+            if (!info) {
+                std::printf("no update available (or check failed)\n");
+                QCoreApplication::exit(2);
+                return;
+            }
+            std::printf("update available: %s (published %s)\n", info->latest.toUtf8().constData(),
+                        info->published.toUtf8().constData());
+            for (const QString& n : info->notes) std::printf("  - %s\n", n.toUtf8().constData());
+            static update::UpdateInstaller installer;
+            installer.prepareAndApply(
+                *info,
+                [](double frac) { std::printf("\rdownloading: %d%%", static_cast<int>(frac * 100)); },
+                [](QString err) {
+                    std::printf("\nupdate failed: %s\n", err.toUtf8().constData());
+                    QCoreApplication::exit(1);
+                },
+                [] {
+                    std::printf("\napply script launched, exiting now\n");
+                    QCoreApplication::exit(0);
+                });
+        },
+        true);
+    return app.exec();
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -212,6 +252,9 @@ int main(int argc, char** argv) {
         if (std::strcmp(argv[i], "--test-export") == 0 && i + 2 < argc) {
             QApplication app(argc, argv);
             return runTestExport(argv[i + 1], argv[i + 2]);
+        }
+        if (std::strcmp(argv[i], "--update-now") == 0) {
+            return runUpdateNow();
         }
     }
 
